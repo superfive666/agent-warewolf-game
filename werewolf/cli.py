@@ -7,11 +7,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .agents.heuristic import HeuristicAgent
 from .engine import Engine
+from .lineup import Lineup
 from .events import Audience
 from .replay import render_replay, result_summary
-from .roles import Faction, Role
+from .roles import BOARDS, Faction, Role
 from .state import GameConfig, new_game
 from .views import build_all_views
 
@@ -30,13 +30,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="agent 狼人杀：12 人标准屠边局",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""示例：
+  python3 run_server.py                        # ★ 启动 Web 沙箱（推荐）
   python3 run_game.py                          # 12 个规则 bot 打一局
+  python3 run_game.py -n 9                     # 9 人局
   python3 run_game.py --seed 7 --show-wolves   # 固定牌局并显示狼人频道
   python3 run_game.py --games 100 --quiet      # 跑 100 局统计胜率
   python3 run_game.py --backend llm            # 12 个 Claude agent 打一局
   python3 run_game.py --backend llm --llm-seats 1,2,3   # 3 个 LLM + 9 个 bot
 """,
     )
+    p.add_argument("-n", "--n-players", type=int, default=12, choices=sorted(BOARDS),
+                   help="人数（板子）")
     p.add_argument("--seed", type=int, default=None, help="随机种子，固定后牌局完全可复现")
     p.add_argument("--games", type=int, default=1, help="连打多少局（>1 时只输出统计）")
     p.add_argument("--backend", choices=["heuristic", "llm"], default="heuristic")
@@ -45,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--win-rule", choices=["edge", "city"], default="edge", help="edge=屠边 city=屠城")
     p.add_argument("--no-sheriff", action="store_true", help="关闭警长竞选")
+    p.add_argument("--no-explode", action="store_true", help="禁止狼人自爆")
+    p.add_argument("--max-speech-chars", type=int, default=450,
+                   help="发言字数上限，450 字 ≈ 真人讲 2 分钟")
+    p.add_argument("--max-iterations", type=int, default=3,
+                   help="每个决策点最多向 agent 索要几次动作（思考长度不限）")
     p.add_argument("--show-wolves", action="store_true", help="实时输出里显示狼人频道（观战上帝视角）")
     p.add_argument("--show-thoughts", action="store_true", help="显示 LLM agent 的内心想法")
     p.add_argument("--quiet", "-q", action="store_true", help="不输出过程")
@@ -57,23 +66,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run_one(args, seed: int | None, quiet: bool) -> tuple:
     config = GameConfig(
+        n_players=args.n_players,
         seed=seed,
         win_rule=args.win_rule,
         sheriff=not args.no_sheriff,
+        wolf_explode=not args.no_explode,
+        max_speech_chars=args.max_speech_chars,
+        max_iterations=args.max_iterations,
     )
     state = new_game(config)
 
-    if args.backend == "llm":
-        from .agents.llm import make_agent_factory
-        factory = make_agent_factory(
-            _parse_seats(args.llm_seats), model=args.model, effort=args.effort,
-            verbose=args.show_thoughts, heuristic_seed=seed,
-        )
-    else:
-        def factory(seat, role):
-            return HeuristicAgent(seat, role, seed=seed)
-
-    agents = {s: factory(s, state.players[s].role) for s in state.seats}
+    llm_seats = _parse_seats(args.llm_seats)
+    seats_payload = [
+        {
+            "seat": s,
+            "backend": "llm" if (args.backend == "llm" and (llm_seats is None or s in llm_seats))
+                       else "heuristic",
+            "model": args.model,
+            "effort": args.effort,
+        }
+        for s in state.seats
+    ]
+    lineup = Lineup.from_payload(args.n_players, seats_payload)
+    agents = lineup.build_agents(state, verbose=args.show_thoughts)
 
     def on_event(e):
         if quiet:
@@ -95,18 +110,22 @@ def run_one(args, seed: int | None, quiet: bool) -> tuple:
 
     engine = Engine(state, agents, on_event=on_event, view_recorder=recorder)
     state = engine.run()
-    return state, agents, view_snapshots
+    return state, agents, view_snapshots, lineup
 
 
-def save_run(outdir: Path, state, agents, args, view_snapshots) -> None:
+def save_run(outdir: Path, state, agents, args, view_snapshots, lineup=None) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     (outdir / "config.json").write_text(
-        json.dumps({**state.config.as_dict(), "backend": args.backend, "model": args.model},
+        json.dumps({**state.config.as_dict(),
+                    "lineup": lineup.as_list() if lineup else None},
                    ensure_ascii=False, indent=2), encoding="utf-8")
     (outdir / "events.jsonl").write_text(state.event_log.to_jsonl(), encoding="utf-8")
     (outdir / "result.json").write_text(
-        json.dumps(result_summary(state), ensure_ascii=False, indent=2), encoding="utf-8")
-    (outdir / "replay.md").write_text(render_replay(state), encoding="utf-8")
+        json.dumps(result_summary(state, lineup), ensure_ascii=False, indent=2), encoding="utf-8")
+    (outdir / "replay.md").write_text(render_replay(state, lineup=lineup), encoding="utf-8")
+    (outdir / "thoughts.json").write_text(
+        json.dumps([t for t in state.thought_log if t["thought"]],
+                   ensure_ascii=False, indent=2), encoding="utf-8")
 
     views = build_all_views(state)
     vdir = outdir / "views"
@@ -116,13 +135,6 @@ def save_run(outdir: Path, state, agents, args, view_snapshots) -> None:
             json.dumps(v, ensure_ascii=False, indent=2), encoding="utf-8")
     (vdir / "wolf_team.json").write_text(
         json.dumps(views["wolf_team"], ensure_ascii=False, indent=2), encoding="utf-8")
-
-    thoughts = {
-        str(s): a.thoughts for s, a in agents.items() if getattr(a, "thoughts", None)
-    }
-    if thoughts:
-        (outdir / "thoughts.json").write_text(
-            json.dumps(thoughts, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if view_snapshots:
         sdir = outdir / "view_snapshots"
@@ -140,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         tally, days = Counter(), []
         for i in range(args.games):
             seed = None if args.seed is None else args.seed + i
-            state, _, _ = run_one(args, seed, quiet=True)
+            state, _, _, _ = run_one(args, seed, quiet=True)
             tally[state.winner.cn if state.winner else "平局"] += 1
             days.append(state.day)
         print(f"\n共 {args.games} 局：")
@@ -149,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  平均天数：{sum(days) / len(days):.2f}")
         return 0
 
-    state, agents, snaps = run_one(args, args.seed, quiet=args.quiet)
+    state, agents, snaps, lineup = run_one(args, args.seed, quiet=args.quiet)
 
     if not args.quiet:
         print("\n" + "=" * 60)
@@ -158,11 +170,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_save:
         outdir = Path(args.out) if args.out else Path("runs") / datetime.now().strftime("%Y%m%d-%H%M%S")
-        save_run(outdir, state, agents, args, snaps)
+        save_run(outdir, state, agents, args, snaps, lineup)
         print(f"\n产物已写入：{outdir}/")
         print(f"  replay.md          文字战报（含上帝视角）")
         print(f"  events.jsonl       全部事件")
-        print(f"  views/seat_01..12.json + wolf_team.json   13 份上下文")
+        print(f"  thoughts.json      每个 agent 的心路历程")
+        print(f"  views/seat_*.json + wolf_team.json   {args.n_players + 1} 份上下文")
     return 0
 
 

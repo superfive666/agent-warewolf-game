@@ -5,15 +5,18 @@ import random
 from dataclasses import dataclass, field
 
 from .events import EventLog
-from .roles import SETUP_STANDARD_12, Faction, Role
+from .roles import Faction, Role, board_for
 
 
 @dataclass
 class GameConfig:
     """对应 docs/01-游戏规则.md §8 的配置项总览。"""
 
+    n_players: int = 12
     win_rule: str = "edge"  # edge(屠边) | city(屠城)
     sheriff: bool = True
+    #: 狼人是否可以自爆
+    wolf_explode: bool = True
     witch_self_rescue_first_night: bool = True
     witch_knows_victim: str = "always"  # always | first_night_only
     witch_same_night_both_potions: bool = False
@@ -22,6 +25,10 @@ class GameConfig:
     wolf_chat_rounds: int = 1
     max_days: int = 20
     seed: int | None = None
+    #: 发言字数上限。人类正常语速约 220 字/分钟，2 分钟 ≈ 450 字。
+    max_speech_chars: int = 450
+    #: 单个决策点最多向 agent 索要几次动作（含首次）。思考长度不限，但迭代次数有上限。
+    max_iterations: int = 3
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -45,6 +52,7 @@ class Player:
     witch_has_antidote: bool = True
     witch_has_poison: bool = True
     idiot_revealed: bool = False
+    exploded: bool = False  # 狼人是否自爆出局
 
     @property
     def faction(self) -> Faction:
@@ -96,6 +104,10 @@ class GameState:
     #: 公开宣称的验人结果 [{day, by, target, result}]，只记录"谁说了什么"，不校验真假
     public_check_claims: list[dict] = field(default_factory=list)
     witch_potion_log: list[dict] = field(default_factory=list)
+    #: 心路历程：每个决策点 agent 的内心想法，只进复盘，绝不进任何玩家视角
+    thought_log: list[dict] = field(default_factory=list)
+    #: 自爆记录
+    explode_log: list[dict] = field(default_factory=list)
 
     winner: Faction | None = None
     end_reason: str = ""
@@ -162,9 +174,9 @@ class GameState:
 
 
 def new_game(config: GameConfig, names: list[str] | None = None) -> GameState:
-    """发牌：随机把 SETUP_STANDARD_12 分配到 1~12 号座位。"""
+    """发牌：随机把板子分配到 1~N 号座位。"""
     rng = random.Random(config.seed)
-    roles = list(SETUP_STANDARD_12)
+    roles = board_for(config.n_players)
     rng.shuffle(roles)
     names = names or [f"{i}号" for i in range(1, len(roles) + 1)]
     players = {

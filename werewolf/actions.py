@@ -35,23 +35,33 @@ class InvalidAction(ValueError):
 # 合法动作描述（进视角的 legal_actions 区块）
 # --------------------------------------------------------------------------
 
-_SPEECH_SCHEMA = {
-    "speech": {"type": "string", "required": True, "desc": "你的公开发言（1~5 句话，像真人一样说）"},
-    "claim": {
-        "type": "enum",
-        "required": False,
-        "options": CLAIMABLE_ROLES + [None],
-        "desc": "你公开宣称的身份，null 表示不起跳。可以说谎。",
-    },
-    "claim_detail": {"type": "string", "required": False, "desc": "补充说明，比如验人结果、警徽流、用药情况"},
-    "claimed_check": {
-        "type": "object|null",
-        "required": False,
-        "desc": '若你以预言家身份公布验人结果，填 {"target": 座位号, "result": "WOLF" 或 "GOOD"}',
-    },
-    "suspects": {"type": "array<int>", "required": False, "desc": "你本轮怀疑的座位"},
-    "trusts": {"type": "array<int>", "required": False, "desc": "你本轮信任的座位"},
-}
+_EXPLODE_DESC = (
+    "是否自爆。自爆 = 当场亮明狼人身份并立刻出局，白天立即结束"
+    "（后续发言取消、今天不投票），直接进入黑夜。没有遗言，若你是警长则警徽销毁。"
+    "这是狼队在局势极度不利时打断好人节奏、保护队友的最后手段。"
+)
+
+
+def _speech_schema(max_chars: int) -> dict:
+    return {
+        "speech": {"type": "string", "required": True,
+                   "desc": f"你的公开发言，最多 {max_chars} 字（约等于真人讲 2 分钟）"},
+        "claim": {
+            "type": "enum",
+            "required": False,
+            "options": CLAIMABLE_ROLES + [None],
+            "desc": "你公开宣称的身份，null 表示不起跳。可以说谎。",
+        },
+        "claim_detail": {"type": "string", "required": False,
+                         "desc": "补充说明，比如验人结果、警徽流、用药情况"},
+        "claimed_check": {
+            "type": "object|null",
+            "required": False,
+            "desc": '若你以预言家身份公布验人结果，填 {"target": 座位号, "result": "WOLF" 或 "GOOD"}',
+        },
+        "suspects": {"type": "array<int>", "required": False, "desc": "你本轮怀疑的座位"},
+        "trusts": {"type": "array<int>", "required": False, "desc": "你本轮信任的座位"},
+    }
 
 
 def legal_actions(state: GameState, seat: int, action_type: str, ctx: dict | None = None) -> dict:
@@ -125,8 +135,11 @@ def legal_actions(state: GameState, seat: int, action_type: str, ctx: dict | Non
         }
 
     if action_type == "sheriff_speech":
-        schema = dict(_SPEECH_SCHEMA)
+        schema = _speech_schema(state.config.max_speech_chars)
         schema["quit"] = {"type": "bool", "options": [True, False], "desc": "是否退水（放弃竞选）"}
+        if state.is_wolf(seat) and state.config.wolf_explode:
+            schema["explode"] = {"type": "bool", "options": [True, False],
+                                 "desc": _EXPLODE_DESC + "（警上自爆会直接中止警长竞选）"}
         return {
             "action_type": "sheriff_speech",
             "description": "警上发言。这是全场第一次公开发言，你的定位会影响整局。",
@@ -152,10 +165,13 @@ def legal_actions(state: GameState, seat: int, action_type: str, ctx: dict | Non
         }
 
     if action_type == "speech":
+        schema = _speech_schema(state.config.max_speech_chars)
+        if state.is_wolf(seat) and state.config.wolf_explode and ctx.get("can_explode", True):
+            schema["explode"] = {"type": "bool", "options": [True, False], "desc": _EXPLODE_DESC}
         return {
             "action_type": "speech",
             "description": ctx.get("description", "轮到你发言了。"),
-            "schema": _SPEECH_SCHEMA,
+            "schema": schema,
         }
 
     if action_type == "vote":
@@ -170,15 +186,12 @@ def legal_actions(state: GameState, seat: int, action_type: str, ctx: dict | Non
         }
 
     if action_type == "last_words":
+        schema = _speech_schema(state.config.max_speech_chars)
+        schema.pop("trusts", None)
         return {
             "action_type": "last_words",
             "description": "你已出局，请留遗言。这是你最后一次向全场传递信息的机会。",
-            "schema": {
-                "speech": {"type": "string", "required": True},
-                "claim": {"type": "enum", "required": False, "options": CLAIMABLE_ROLES + [None]},
-                "claim_detail": {"type": "string", "required": False},
-                "suspects": {"type": "array<int>", "required": False},
-            },
+            "schema": schema,
         }
 
     if action_type == "hunter_shoot":
@@ -229,7 +242,17 @@ def _as_seat_list(value, allowed: list[int]) -> list[int]:
     return out
 
 
-def _clean_speech_fields(raw: dict, alive: list[int]) -> dict:
+def _check_length(text: str, max_chars: int) -> str:
+    """发言字数上限：人类 2 分钟大约就这么多字，超了就打回让 agent 重说。"""
+    if len(text) > max_chars:
+        raise InvalidAction(
+            f"发言太长了：{len(text)} 字，上限 {max_chars} 字"
+            f"（真人 2 分钟大概只能说这么多）。请压缩到 {max_chars} 字以内重说。"
+        )
+    return text
+
+
+def _clean_speech_fields(raw: dict, alive: list[int], max_chars: int = 450) -> dict:
     claim = raw.get("claim")
     if isinstance(claim, str):
         claim = claim.strip().upper()
@@ -251,8 +274,9 @@ def _clean_speech_fields(raw: dict, alive: list[int]) -> dict:
         if t is not None and r in ("WOLF", "GOOD"):
             claimed_check = {"target": t, "result": r}
 
+    speech = _as_text(raw.get("speech"), "speech", "（该玩家没有发言）") or "（该玩家没有发言）"
     return {
-        "speech": _as_text(raw.get("speech"), "speech", "（该玩家没有发言）") or "（该玩家没有发言）",
+        "speech": _check_length(speech, max_chars),
         "claim": claim,
         "claim_detail": _as_text(raw.get("claim_detail"), "claim_detail"),
         "claimed_check": claimed_check,
@@ -315,8 +339,9 @@ def validate(state: GameState, seat: int, action_type: str, raw: dict, ctx: dict
         return {"run": bool(raw.get("run")), "reason": _as_text(raw.get("reason"), "reason")}
 
     if action_type == "sheriff_speech":
-        out = _clean_speech_fields(raw, alive)
+        out = _clean_speech_fields(raw, alive, state.config.max_speech_chars)
         out["quit"] = bool(raw.get("quit"))
+        out["explode"] = bool(raw.get("explode")) and "explode" in schema
         return out
 
     if action_type == "sheriff_vote":
@@ -329,7 +354,9 @@ def validate(state: GameState, seat: int, action_type: str, raw: dict, ctx: dict
         }
 
     if action_type == "speech":
-        return _clean_speech_fields(raw, alive)
+        out = _clean_speech_fields(raw, alive, state.config.max_speech_chars)
+        out["explode"] = bool(raw.get("explode")) and "explode" in schema
+        return out
 
     if action_type == "vote":
         candidates = list(ctx.get("candidates", [s for s in alive if s != seat]))
@@ -339,7 +366,7 @@ def validate(state: GameState, seat: int, action_type: str, raw: dict, ctx: dict
         }
 
     if action_type == "last_words":
-        out = _clean_speech_fields(raw, state.seats)
+        out = _clean_speech_fields(raw, state.seats, state.config.max_speech_chars)
         out.pop("trusts", None)
         return out
 
@@ -372,6 +399,7 @@ def default_action(state: GameState, seat: int, action_type: str, ctx: dict | No
     if action_type in ("speech", "sheriff_speech", "last_words"):
         out = {
             "speech": "（该玩家没有发言）",
+            "explode": False,
             "claim": None,
             "claim_detail": "",
             "claimed_check": None,
@@ -382,6 +410,7 @@ def default_action(state: GameState, seat: int, action_type: str, ctx: dict | No
             out["quit"] = False
         if action_type == "last_words":
             out.pop("trusts")
+            out.pop("explode")
         return out
     if action_type in ("vote", "sheriff_vote", "hunter_shoot", "badge_transfer"):
         out = {"target": None}

@@ -10,21 +10,45 @@ from __future__ import annotations
 from .roles import Role
 from .views import PlayerView
 
-RULES_DIGEST = """\
-你正在参加一局【12 人标准狼人杀（屠边局）】。
-
-板子：4 狼人 / 4 神（预言家·女巫·猎人·白痴）/ 4 平民，座位固定为 1~12 号。
-胜负：
-  · 好人胜 —— 4 名狼人全部出局
-  · 狼人胜 —— 4 名神职全部出局（屠神）或 4 名平民全部出局（屠民），任一达成即可
-技能：
-  · 预言家：每晚查验一人，得知【狼人】或【好人】
-  · 女巫：一瓶解药一瓶毒药，整局各一次，同夜只能用一瓶；首夜可自救
-  · 猎人：被刀或被票出局时可开枪带走一人；被毒死时不能开枪
-  · 白痴：被票出局时翻牌不死，但永久失去投票权，且当天不再有人出局
-流程：每晚 狼人刀人 → 女巫用药 → 预言家验人；白天 公布死讯 → 发言 → 投票放逐。
-第一天白天开始前有警长竞选，警长 1.5 票并决定发言顺序。
-"""
+def rules_digest(view: PlayerView) -> str:
+    """规则摘要。随板子人数变化，所以按局生成。"""
+    rd = view.public_state["rules_digest"]
+    n = rd["n_players"]
+    skills = {
+        "SEER": "  · 预言家：每晚查验一人，得知【狼人】或【好人】",
+        "WITCH": "  · 女巫：一瓶解药一瓶毒药，整局各一次，同夜只能用一瓶；首夜可自救",
+        "HUNTER": "  · 猎人：被刀或被票出局时可开枪带走一人；被毒死时不能开枪",
+        "IDIOT": "  · 白痴：被票出局时翻牌不死，但永久失去投票权，且当天不再有人出局",
+    }
+    lines = [
+        f"你正在参加一局【{rd['board_name']}】。",
+        "",
+        f"座位固定为 1~{n} 号。",
+        "胜负（屠边）：",
+        f"  · 好人胜 —— {rd['wolves']} 名狼人全部出局",
+        f"  · 狼人胜 —— {rd['gods']} 名神职全部出局（屠神）"
+        f"或 {rd['villagers']} 名平民全部出局（屠民），任一达成即可",
+        "技能：",
+    ]
+    lines += [skills[r] for r in ("SEER", "WITCH", "HUNTER", "IDIOT") if r in rd["roles"]]
+    lines += [
+        "  · 狼人：每晚共同刀一人（可空刀）；白天可以【自爆】",
+        "",
+        "流程：每晚 狼人商议刀人 → 女巫用药 → 预言家验人；"
+        "白天 公布死讯 → 依次发言 → 投票放逐 → 遗言。",
+    ]
+    if rd["sheriff"]:
+        lines.append("第一天白天开始前有警长竞选，警长 1.5 票并决定发言顺序。")
+    lines.append(
+        "【自爆】狼人在白天发言阶段可以自爆：当场亮明狼人身份立刻出局，"
+        "白天立即结束（后续发言取消、今天不投票），直接进入黑夜。"
+        "自爆没有遗言，若自爆者是警长则警徽销毁。"
+    )
+    lines.append(
+        f"【发言长度】每次发言最多 {rd['max_speech_chars']} 字，"
+        "大约等于真人在牌桌上讲 2 分钟。超长会被打回重说。"
+    )
+    return "\n".join(lines)
 
 ROLE_STRATEGY = {
     Role.WEREWOLF: """\
@@ -33,7 +57,10 @@ ROLE_STRATEGY = {
   · 倒钩：假装相信真预言家，混进好人阵营
   · 抗推：牺牲一名队友换取其他队友的信任
   · 屠边：优先杀神（预言家、女巫、猎人）而不是平民，神死光就赢
-你只知道 4 名狼队友是谁，其余 8 人对你也是黑的 —— 你并不知道谁是预言家。
+  · 自爆：局势极差时（比如你被真预言家查杀、全场都在归票你）可以自爆，
+    用你这条命换掉好人一整个白天的发言和投票，给队友争取一个晚上。
+    自爆是很贵的手段，队友还活着、且这个白天对好人特别有利时才值得。
+你只知道狼队友是谁，其余人对你也是黑的 —— 你并不知道谁是预言家。
 夜里在狼人频道说的话好人永远看不到，白天要注意不要说漏嘴。""",
     Role.SEER: """\
 你是预言家，是好人阵营最重要的信息源。常见打法：
@@ -65,8 +92,10 @@ ROLE_STRATEGY = {
 OUTPUT_RULE = """\
 你必须只输出一个 JSON 对象，不要输出任何解释性文字、不要用 markdown 代码块包裹。
 字段含义和取值范围会在每次请求里给出，超出范围的取值会被判为非法并要求你重来。
-`private_thought` 字段是你的内心想法，任何其他玩家都看不到，请在里面写下你真实的推理。
-发言字段（speech）要写得像真人在牌桌上说话：口语、有情绪、有针对性，2~5 句，不要写成报告。
+`private_thought` 字段是你的内心想法，任何其他玩家都看不到，请在里面写下你真实的推理：
+你怎么读的场上局势、你在骗谁、你为什么这么选。这部分不限长度，写透。
+发言字段（speech）不一样——那是要念出来给全场听的，要写得像真人在牌桌上说话：
+口语、有情绪、有针对性，并且**必须控制在字数上限内**（大约真人讲 2 分钟的量）。
 """
 
 
@@ -74,7 +103,7 @@ def system_prompt(view: PlayerView) -> str:
     """整局不变的角色卡。"""
     idt = view.identity
     parts = [
-        RULES_DIGEST,
+        rules_digest(view),
         "════════ 你的身份 ════════",
         f"你是 {idt['name']}（{idt['seat']} 号座位），身份是【{idt['role_cn']}】，"
         f"属于【{idt['faction_cn']}】。",
@@ -267,10 +296,10 @@ _SCHEMAS: dict[str, dict] = {
     "witch_action": {"heal": {"type": "boolean"}, "poison": _INT_OR_NULL},
     "seer_check": {"target": {"type": "integer"}},
     "sheriff_signup": {"run": {"type": "boolean"}, "reason": _STR},
-    "sheriff_speech": {**_SPEECH_PROPS, "quit": {"type": "boolean"}},
+    "sheriff_speech": {**_SPEECH_PROPS, "quit": {"type": "boolean"}, "explode": {"type": "boolean"}},
     "sheriff_vote": {"target": _INT_OR_NULL},
     "badge_transfer": {"target": _INT_OR_NULL, "reason": _STR},
-    "speech": dict(_SPEECH_PROPS),
+    "speech": {**_SPEECH_PROPS, "explode": {"type": "boolean"}},
     "vote": {"target": _INT_OR_NULL, "reason": _STR},
     "last_words": {k: v for k, v in _SPEECH_PROPS.items() if k != "trusts"},
     "hunter_shoot": {"target": _INT_OR_NULL},

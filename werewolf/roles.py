@@ -45,12 +45,48 @@ ROLE_CN = {
 
 GOD_ROLES = frozenset({Role.SEER, Role.WITCH, Role.HUNTER, Role.IDIOT})
 
-#: 标准 12 人屠边局：4 狼 + 4 神 + 4 民
-SETUP_STANDARD_12 = (
-    [Role.WEREWOLF] * 4
-    + [Role.SEER, Role.WITCH, Role.HUNTER, Role.IDIOT]
-    + [Role.VILLAGER] * 4
-)
+_W, _V = Role.WEREWOLF, Role.VILLAGER
+
+#: 支持的板子：人数 -> 角色列表。全部为屠边局。
+BOARDS: dict[int, list[Role]] = {
+    6: [_W, _W, Role.SEER, Role.WITCH, _V, _V],
+    8: [_W, _W, Role.SEER, Role.WITCH, Role.HUNTER, _V, _V, _V],
+    9: [_W, _W, _W, Role.SEER, Role.WITCH, Role.HUNTER, _V, _V, _V],
+    10: [_W, _W, _W, Role.SEER, Role.WITCH, Role.HUNTER, Role.IDIOT, _V, _V, _V],
+    12: [_W] * 4 + [Role.SEER, Role.WITCH, Role.HUNTER, Role.IDIOT] + [_V] * 4,
+}
+
+BOARD_NAMES = {
+    6: "6人局：2狼 / 预言家·女巫 / 2民",
+    8: "8人局：2狼 / 预言家·女巫·猎人 / 3民",
+    9: "9人局：3狼 / 预言家·女巫·猎人 / 3民",
+    10: "10人局：3狼 / 预言家·女巫·猎人·白痴 / 3民",
+    12: "12人标准局：4狼 / 预言家·女巫·猎人·白痴 / 4民",
+}
+
+
+def board_for(n_players: int) -> list[Role]:
+    if n_players not in BOARDS:
+        raise ValueError(f"不支持 {n_players} 人局，可选：{sorted(BOARDS)}")
+    return list(BOARDS[n_players])
+
+
+def board_summary(n_players: int) -> dict:
+    from collections import Counter
+
+    c = Counter(BOARDS[n_players])
+    return {
+        "n_players": n_players,
+        "name": BOARD_NAMES[n_players],
+        "wolves": c[Role.WEREWOLF],
+        "gods": sum(c[r] for r in GOD_ROLES),
+        "villagers": c[Role.VILLAGER],
+        "roles": {r.value: c[r] for r in Role if c[r]},
+    }
+
+
+#: 标准 12 人屠边局（向后兼容的别名）
+SETUP_STANDARD_12 = BOARDS[12]
 
 #: 每个角色的胜利条件描述，直接进 agent 的身份卡
 WIN_CONDITION_CN = {

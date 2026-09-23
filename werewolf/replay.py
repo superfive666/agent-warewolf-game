@@ -1,51 +1,172 @@
-"""复盘渲染：把上帝视角的事件流变成人类可读的战报。"""
+"""复盘渲染：把上帝视角的事件流变成一份详细战报，含每个 agent 的心路历程。"""
 from __future__ import annotations
 
+from collections import Counter, defaultdict
+
 from .events import Audience
-from .roles import Faction, Role
+from .roles import Faction, Role, board_summary
 from .state import GameState
 
 _AUD_MARK = {
-    Audience.PUBLIC: "  ",
+    Audience.PUBLIC: "　　",
     Audience.WOLVES: "🐺",
     Audience.PRIVATE: "🔒",
     Audience.GOD: "👁",
 }
 
+_WHEN_CN = {"night": "夜里", "vote": "被投票", "shot": "被枪杀", "explode": "自爆"}
+_CAUSE_CN = {
+    "killed": "被狼刀", "poisoned": "被女巫毒", "exiled": "被放逐",
+    "shot": "被猎人枪杀", "exploded": "自爆",
+}
 
-def render_replay(state: GameState, *, include_god: bool = True) -> str:
-    lines = ["# 对局复盘", ""]
-    lines += ["## 身份表", "", "| 座位 | 身份 | 阵营 | 结局 |", "|---|---|---|---|"]
+
+def _fate(p) -> str:
+    if p.alive:
+        return "存活到最后"
+    return f"第{p.died_day}天{_WHEN_CN.get(p.died_when, p.died_when)}（{_CAUSE_CN.get(p.died_cause, p.died_cause)}）"
+
+
+def render_replay(state: GameState, *, include_god: bool = True, lineup=None) -> str:
+    """完整战报：身份表 → 结果 → 关键节点 → 全过程 → 每人心路历程 → 统计。"""
+    b = board_summary(state.config.n_players)
+    L = ["# 对局复盘", "", f"**{b['name']}** · "
+         f"胜负规则：{'屠边' if state.config.win_rule == 'edge' else '屠城'}"
+         f" · 随机种子：`{state.config.seed}`", ""]
+
+    # ---------- 结果 ----------
+    L += ["## 结果", "",
+          f"### {'🟢 好人阵营胜利' if state.winner is Faction.VILLAGE else '🔴 狼人阵营胜利' if state.winner is Faction.WOLF else '⚪ 平局'}",
+          "", f"{state.end_reason}　·　共进行 {state.day} 天", ""]
+
+    # ---------- 身份表 ----------
+    L += ["## 身份表", "", "| 座位 | 身份 | 阵营 | agent | 结局 |", "|---|---|---|---|---|"]
     for s in state.seats:
         p = state.players[s]
-        if p.alive:
-            fate = "存活"
+        agent_label = ""
+        if lineup and s in getattr(lineup, "specs", {}):
+            sp = lineup.specs[s]
+            agent_label = sp.label + (f" ({sp.effort})" if sp.backend == "llm" else "")
+        badge = " 👑" if state.sheriff_seat == s else ""
+        L.append(f"| {s}号{badge} | {p.role.cn} | {p.faction.cn} | {agent_label} | {_fate(p)} |")
+    L.append("")
+
+    # ---------- 关键节点 ----------
+    L += ["## 关键节点", ""]
+    exploded_seats = {e["seat"] for e in state.explode_log}
+    for d in state.death_record:
+        pl = state.players[d["seat"]]
+        if d["seat"] in exploded_seats:
+            e = next(x for x in state.explode_log if x["seat"] == d["seat"])
+            L.append(f"- **第{d['day']}天** 💥 {d['seat']}号（狼人）在 {e['phase']} 阶段自爆，"
+                     "当天发言和投票全部中止")
         else:
-            when = {"night": f"第{p.died_day}夜", "vote": f"第{p.died_day}天被票",
-                    "shot": f"第{p.died_day}天被枪杀"}.get(p.died_when, str(p.died_when))
-            cause = {"killed": "被狼刀", "poisoned": "被毒", "exiled": "被放逐", "shot": "被枪杀"}
-            fate = f"{when}（{cause.get(p.died_cause, p.died_cause)}）"
-        lines.append(f"| {s} | {p.role.cn} | {p.faction.cn} | {fate} |")
+            L.append(f"- **第{d['day']}天** {d['seat']}号（{pl.role.cn}）"
+                     f"{_CAUSE_CN.get(d['cause'], d['cause'])}出局")
+    if state.sheriff_status == "elected" and state.sheriff_seat:
+        L.append(f"- 警长：{state.sheriff_seat}号（{state.players[state.sheriff_seat].role.cn}）")
+    elif state.sheriff_status in ("lost", "destroyed"):
+        L.append(f"- 警徽{'流失' if state.sheriff_status == 'lost' else '被销毁'}，本局无警长")
+    L.append("")
 
-    lines += ["", "## 结果", "",
-              f"**{state.winner.cn if state.winner else '平局'}** —— {state.end_reason}",
-              f"（共进行 {state.day} 天）", "", "## 全过程", ""]
-    lines.append("> 图例：（空白）=全场公开　🐺=仅狼人可见　🔒=仅当事人可见　👁=上帝日志")
-    lines.append("")
+    # ---------- 神职操作 ----------
+    L += ["## 神职与狼队的每一手", ""]
+    if state.seer_checks:
+        L.append("**预言家验人**")
+        for c in state.seer_checks:
+            L.append(f"- 第{c['day']}夜 验 {c['target']}号 → "
+                     f"{'🔴 查杀' if c['result'] == 'WOLF' else '🟢 金水'}"
+                     f"（实际是{state.players[c['target']].role.cn}）")
+        L.append("")
+    if state.witch_potion_log:
+        L.append("**女巫用药**")
+        for x in state.witch_potion_log:
+            L.append(f"- 第{x['day']}夜 {'解药救' if x['potion'] == 'antidote' else '毒杀'} "
+                     f"{x['target']}号（{state.players[x['target']].role.cn}）")
+        L.append("")
+    if state.wolf_kill_history:
+        L.append("**狼队刀人**")
+        outcome = {"died": "得手", "saved_by_witch": "被女巫解药救了", "empty_knife": "空刀", "pending": "—"}
+        for k in state.wolf_kill_history:
+            tgt = f"{k['decided']}号（{state.players[k['decided']].role.cn}）" if k["decided"] else "空刀"
+            L.append(f"- 第{k['day']}夜 刀 {tgt} → {outcome.get(k['outcome'], k['outcome'])}"
+                     f"　狼队内部票型 {k['votes']}")
+        L.append("")
 
+    # ---------- 投票 ----------
+    if state.vote_history:
+        L += ["## 投票记录", ""]
+        for v in state.vote_history:
+            kind = "警长竞选" if v["type"] == "sheriff" else "放逐投票"
+            desc = "、".join(
+                f"{k}号→{t}号" if t else f"{k}号弃票" for k, t in v["votes"].items()
+            ) or "无人投票"
+            if v["result"] is None:
+                res = "平票"
+            elif v["type"] == "sheriff":
+                res = f"{v['result']}号当选警长"
+            else:
+                res = f"{v['result']}号被放逐"
+            L.append(f"- **第{v['day']}天 {kind}（第{v['round']}轮）**：{desc}")
+            L.append(f"  - 计票 {({k: round(x, 1) for k, x in v['tally'].items()})} → {res}")
+        L.append("")
+
+    # ---------- 全过程 ----------
+    L += ["## 全过程", "",
+          "> 图例：（空白）=全场公开　🐺=仅狼人可见　🔒=仅当事人可见　👁=上帝日志（含心路历程）", ""]
     current_day = None
     for e in state.event_log:
         if e.audience is Audience.GOD and not include_god:
             continue
+        if e.type == "thought":
+            continue  # 心路历程单独成章，这里不重复
         if e.day != current_day:
             current_day = e.day
-            lines += ["", f"### 第 {current_day} 天" if current_day else "### 开局", ""]
-        lines.append(f"`{_AUD_MARK[e.audience]}` **[{e.phase}]** {e.text}")
-    return "\n".join(lines) + "\n"
+            L += ["", f"### 第 {current_day} 天" if current_day else "### 开局", ""]
+        L.append(f"`{_AUD_MARK[e.audience]}` **[{e.phase}]** {e.text}")
+    L.append("")
+
+    # ---------- 心路历程 ----------
+    L += ["## 心路历程", "",
+          "每个 agent 在每个决策点的内心想法。**这些内容从未进入过任何其他玩家的视角。**", ""]
+    by_seat: dict[int, list[dict]] = defaultdict(list)
+    for t in state.thought_log:
+        if t["thought"]:
+            by_seat[t["seat"]].append(t)
+    for seat in state.seats:
+        p = state.players[seat]
+        entries = by_seat.get(seat, [])
+        L += ["", f"### {seat}号 · {p.role.cn}（{p.faction.cn}）· {_fate(p)}", ""]
+        if not entries:
+            L.append("_（该 agent 没有产出内心想法）_")
+            continue
+        for t in entries:
+            tag = "" if t["accepted"] else f"（第{t['attempt']}次尝试，被判非法：{t['error']}）"
+            L.append(f"- **第{t['day']}天 · {t['phase']} · {t['action_type']}**{tag}")
+            L.append(f"  > {t['thought']}")
+            if t["accepted"] and t["action"]:
+                L.append(f"  - → 实际动作：`{t['action']}`")
+    L.append("")
+
+    # ---------- 统计 ----------
+    L += ["", "## 统计", ""]
+    votes_cast = Counter()
+    for v in state.vote_history:
+        for voter, target in v["votes"].items():
+            if target is not None:
+                votes_cast[int(voter)] += 1
+    retries = [t for t in state.thought_log if not t["accepted"]]
+    L += [
+        f"- 事件总数：{len(state.event_log)}",
+        f"- 决策次数：{len({(t['turn']) for t in state.thought_log})}",
+        f"- 心路历程条数：{sum(len(v) for v in by_seat.values())}",
+        f"- 非法动作重试：{len(retries)} 次",
+        f"- 自爆：{len(state.explode_log)} 次",
+    ]
+    return "\n".join(L) + "\n"
 
 
 def render_console(state: GameState, *, show_wolves: bool = False) -> str:
-    """跑game时的实时输出用的精简版。"""
     out = []
     for e in state.event_log:
         if e.audience is Audience.PUBLIC:
@@ -55,13 +176,17 @@ def render_console(state: GameState, *, show_wolves: bool = False) -> str:
     return "\n".join(out)
 
 
-def result_summary(state: GameState) -> dict:
+def result_summary(state: GameState, lineup=None) -> dict:
     return {
         "winner": state.winner.value if state.winner else None,
         "winner_cn": state.winner.cn if state.winner else "平局",
         "reason": state.end_reason,
         "days": state.day,
+        "board": board_summary(state.config.n_players),
+        "config": state.config.as_dict(),
+        "lineup": lineup.as_list() if lineup else None,
         "roles": {str(s): state.players[s].role.value for s in state.seats},
+        "roles_cn": {str(s): state.players[s].role.cn for s in state.seats},
         "alive": state.alive_seats(),
         "death_record": state.death_record,
         "sheriff": state.sheriff_seat,
@@ -70,4 +195,6 @@ def result_summary(state: GameState) -> dict:
         "seer_checks": state.seer_checks,
         "wolf_kill_history": state.wolf_kill_history,
         "witch_potion_log": state.witch_potion_log,
+        "explode_log": state.explode_log,
+        "n_thoughts": len([t for t in state.thought_log if t["thought"]]),
     }

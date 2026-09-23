@@ -16,19 +16,24 @@ from .state import GameConfig, GameState, new_game
 from .views import build_player_view
 
 
+class DayInterrupted(Exception):
+    """狼人自爆：白天立即结束，后续发言和投票全部取消，直接进入黑夜。"""
+
+
 class Engine:
     def __init__(
         self,
         state: GameState,
         agents: dict[int, Agent],
         *,
-        max_retries: int = 2,
+        max_iterations: int | None = None,
         on_event=None,
         view_recorder=None,
     ) -> None:
         self.state = state
         self.agents = agents
-        self.max_retries = max_retries
+        #: 单个决策点最多向 agent 索要几次动作。思考长度不限，但迭代次数有上限。
+        self.max_iterations = max_iterations or state.config.max_iterations
         self.on_event = on_event
         self.view_recorder = view_recorder
         self._last_seen: dict[int, int] = {s: 0 for s in state.seats}
@@ -46,14 +51,18 @@ class Engine:
         return e
 
     def ask(self, seat: int, action_type: str, ctx: dict | None = None) -> dict:
-        """向某个座位索要一个动作：构造视角 → agent 决策 → 校验 → (重试) → 回退。"""
+        """向某个座位索要一个动作：构造视角 → agent 决策 → 校验 → (重试) → 回退。
+
+        agent 的思考长度不受限制，但索要次数受 ``max_iterations`` 约束：
+        每次失败都会把错误信息回灌给 agent，用尽次数后走安全回退，流程永不卡死。
+        """
         st = self.state
         ctx = ctx or {}
         self._turn += 1
         agent = self.agents[seat]
         error = None
 
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(self.max_iterations):
             view = build_player_view(
                 st, seat,
                 action_type=action_type,
@@ -62,36 +71,77 @@ class Engine:
             )
             if self.view_recorder:
                 self.view_recorder(self._turn, seat, action_type, view)
+
+            thought = None
             try:
                 raw = agent.act(view, error=error)
+                if isinstance(raw, dict):
+                    raw = dict(raw)
+                    # 心路历程：从动作里摘出来，只进上帝日志，绝不进任何玩家视角
+                    thought = raw.pop("private_thought", None) or None
                 cleaned = A.validate(st, seat, action_type, raw, ctx)
             except A.InvalidAction as exc:
                 error = str(exc)
+                self._record_thought(seat, action_type, attempt, thought,
+                                     action=None, accepted=False, error=error)
                 self.emit(
                     type="invalid_action", audience=Audience.GOD, actor=seat,
-                    text=f"{seat}号的 {action_type} 动作非法（第{attempt + 1}次）：{error}",
+                    text=f"{seat}号的 {action_type} 动作非法（第{attempt + 1}/{self.max_iterations}次）：{error}",
                     payload={"action_type": action_type, "error": error},
                 )
                 continue
             except Exception as exc:  # agent 后端本身出错（网络、解析等）
                 error = f"{type(exc).__name__}: {exc}"
+                self._record_thought(seat, action_type, attempt, thought,
+                                     action=None, accepted=False, error=error)
                 self.emit(
                     type="agent_error", audience=Audience.GOD, actor=seat,
-                    text=f"{seat}号的 agent 报错（第{attempt + 1}次）：{error}",
+                    text=f"{seat}号的 agent 报错（第{attempt + 1}/{self.max_iterations}次）：{error}",
                     payload={"action_type": action_type, "error": error},
                 )
                 continue
+
+            self._record_thought(seat, action_type, attempt, thought,
+                                 action=cleaned, accepted=True, error=None)
             self._last_seen[seat] = len(st.event_log)
             return cleaned
 
         fallback = A.default_action(st, seat, action_type, ctx)
         self.emit(
             type="fallback_action", audience=Audience.GOD, actor=seat,
-            text=f"{seat}号用尽重试，使用安全默认动作：{fallback}",
+            text=f"{seat}号用尽 {self.max_iterations} 次迭代，使用安全默认动作：{fallback}",
             payload={"action_type": action_type, "action": fallback},
         )
         self._last_seen[seat] = len(st.event_log)
         return fallback
+
+    def _record_thought(self, seat, action_type, attempt, thought, *, action, accepted, error):
+        """记录心路历程。这是 GOD 级信息，复盘可见，任何玩家视角都看不到。"""
+        st = self.state
+        if thought is None and accepted:
+            return
+        entry = {
+            "turn": self._turn,
+            "seq": len(st.event_log),
+            "day": st.day,
+            "phase": st.phase,
+            "seat": seat,
+            "role": st.players[seat].role.value,
+            "role_cn": st.players[seat].role.cn,
+            "action_type": action_type,
+            "attempt": attempt + 1,
+            "thought": thought or "",
+            "action": action,
+            "accepted": accepted,
+            "error": error,
+        }
+        st.thought_log.append(entry)
+        if thought:
+            self.emit(
+                type="thought", audience=Audience.GOD, actor=seat,
+                text=f"[{seat}号 {st.players[seat].role.cn} 内心] {thought}",
+                payload=entry,
+            )
 
     # ---------------- 公开信息记账 ----------------
 
@@ -114,6 +164,30 @@ class Engine:
             type=kind, audience=Audience.PUBLIC, actor=seat, text=text,
             payload={k: v for k, v in act.items() if k != "speech"},
         )
+
+    def _handle_explode(self, seat: int, act: dict) -> None:
+        """狼人自爆：亮身份、立刻出局、白天当场结束。没有遗言，警徽销毁。"""
+        st = self.state
+        p = st.players[seat]
+        # 自爆前说的那句话仍然进公开记录
+        if act.get("speech") and act["speech"] != "（该玩家没有发言）":
+            self.emit(type="speech", audience=Audience.PUBLIC, actor=seat,
+                      text=f"{p.name}：{act['speech']}")
+        p.exploded = True
+        p.revealed_role = Role.WEREWOLF
+        badge_note = ""
+        if p.is_sheriff or st.sheriff_seat == seat:
+            p.is_sheriff = False
+            st.sheriff_seat, st.sheriff_status = None, "destroyed"
+            badge_note = "（自爆销毁警徽，本局不再有警长）"
+        self.emit(
+            type="explode", audience=Audience.PUBLIC, actor=seat, targets=[seat],
+            text=f"💥 {seat}号自爆！亮明【狼人】身份并立刻出局。今天的发言和投票全部中止，"
+                 f"直接进入黑夜。{badge_note}",
+            payload={"seat": seat, "phase": st.phase},
+        )
+        st.explode_log.append({"day": st.day, "seat": seat, "phase": st.phase})
+        self.kill(seat, when="explode", cause="exploded")
 
     # ---------------- 死亡与结算 ----------------
 
@@ -394,6 +468,12 @@ class Engine:
         withdrawn: list[int] = []
         for seat in candidates:
             act = self.ask(seat, "sheriff_speech")
+            if act.get("explode"):
+                self._handle_explode(seat, act)
+                st.sheriff_status = "lost"
+                self.emit(type="sheriff_result", audience=Audience.PUBLIC,
+                          text="上帝：警上有人自爆，警长竞选中止，本局没有警长。")
+                raise DayInterrupted
             self._record_public_speech(seat, act, kind="sheriff_speech")
             if act.get("quit"):
                 withdrawn.append(seat)
@@ -417,6 +497,10 @@ class Engine:
             tied = self._last_tied
             for seat in tied:
                 act = self.ask(seat, "sheriff_speech")
+                if act.get("explode"):
+                    self._handle_explode(seat, act)
+                    st.sheriff_status = "lost"
+                    raise DayInterrupted
                 self._record_public_speech(seat, act, kind="sheriff_pk_speech")
             voters2 = [s for s in alive if s not in tied and s not in candidates]
             winner = self._sheriff_vote_round(tied, voters2, rnd=2)
@@ -515,6 +599,9 @@ class Engine:
             act = self.ask(seat, "speech", {
                 "description": f"轮到你发言了，你是本轮第 {i + 1} / {len(st.speech_order)} 位发言者。"
             })
+            if act.get("explode"):
+                self._handle_explode(seat, act)
+                raise DayInterrupted
             self._record_public_speech(seat, act)
 
     def run_day_vote(self) -> None:
@@ -529,6 +616,9 @@ class Engine:
                           text=f"上帝：平票！{ '、'.join(f'{s}号' for s in tied) } 进入 PK，各发言一轮。")
                 for seat in tied:
                     act = self.ask(seat, "speech", {"description": "你进入了 PK 台，这是你最后的辩解机会。"})
+                    if act.get("explode"):
+                        self._handle_explode(seat, act)
+                        raise DayInterrupted
                     self._record_public_speech(seat, act, kind="pk_speech")
                 st.phase = "DAY_VOTE"
                 exiled = self._vote_round(
@@ -597,12 +687,16 @@ class Engine:
             self.run_night()
             if not self.run_dawn():
                 break
-            if st.day == 1:
-                self.run_sheriff_election()
-                if st.check_winner():
-                    break
-            self.run_day_speeches()
-            self.run_day_vote()
+            try:
+                if st.day == 1:
+                    self.run_sheriff_election()
+                    if st.check_winner():
+                        break
+                self.run_day_speeches()
+                self.run_day_vote()
+            except DayInterrupted:
+                # 狼人自爆：白天到此为止，直接进入下一个黑夜
+                pass
             if st.check_winner():
                 break
         st.phase = "GAME_OVER"

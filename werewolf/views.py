@@ -240,6 +240,25 @@ def _role_knowledge(state: GameState, seat: int) -> dict:
     return {}  # 平民没有任何私有信息
 
 
+def _rules_digest(state: GameState) -> dict:
+    """公开的规则摘要 —— 板子构成是所有玩家都知道的信息。"""
+    from .roles import board_summary
+
+    b = board_summary(state.config.n_players)
+    return {
+        "n_players": b["n_players"],
+        "board_name": b["name"],
+        "wolves": b["wolves"],
+        "gods": b["gods"],
+        "villagers": b["villagers"],
+        "roles": b["roles"],
+        "win_rule": state.config.win_rule,
+        "sheriff": state.config.sheriff,
+        "wolf_explode": state.config.wolf_explode,
+        "max_speech_chars": state.config.max_speech_chars,
+    }
+
+
 def _public_state(state: GameState) -> dict:
     pub = public_players(state)
     return {
@@ -258,11 +277,7 @@ def _public_state(state: GameState) -> dict:
             str(s): pub[s].revealed_role for s in state.seats if pub[s].revealed_role
         },
         "vote_history": [dict(v) for v in state.vote_history],
-        "rules_digest": {
-            "setup": "12人局：4狼人 / 4神(预言家·女巫·猎人·白痴) / 4平民",
-            "win_rule": state.config.win_rule,
-            "sheriff": state.config.sheriff,
-        },
+        "rules_digest": _rules_digest(state),
     }
 
 

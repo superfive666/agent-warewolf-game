@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>狼人杀 Agent 沙箱</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐺</text></svg>">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <h1>🐺 狼人杀 Agent 沙箱</h1>
+  <div class="sub">配置一桌 agent → 开局自动跑完 → 出一份含心路历程的详细复盘</div>
+</header>
+
+<main>
+  <!-- ══════════ 配置 ══════════ -->
+  <section id="setup" class="card">
+    <h2>1 · 配置牌局 <button id="toggle-setup" class="ghost tiny hidden">改配置</button></h2>
+
+    <div class="row">
+      <label>人数</label>
+      <div id="board-picker" class="chips"></div>
+    </div>
+    <div id="board-desc" class="hint"></div>
+
+    <div class="row">
+      <label>快速套用</label>
+      <div class="inline">
+        <select id="bulk-backend">
+          <option value="heuristic">规则 bot</option>
+          <option value="llm">Claude</option>
+        </select>
+        <select id="bulk-model"></select>
+        <select id="bulk-effort"></select>
+        <button class="ghost" id="bulk-apply">套用到全部座位</button>
+      </div>
+    </div>
+
+    <table id="seats">
+      <thead><tr><th>座位</th><th>后端</th><th>模型</th><th>思考强度</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <details class="adv">
+      <summary>高级选项</summary>
+      <div class="grid">
+        <label>随机种子<input id="seed" type="number" placeholder="留空 = 每局都不同"></label>
+        <label>发言字数上限
+          <input id="max-speech" type="number" value="450" min="50" max="2000">
+          <span class="hint">450 字 ≈ 真人讲 2 分钟</span>
+        </label>
+        <label>最大迭代次数
+          <input id="max-iter" type="number" value="3" min="1" max="10">
+          <span class="hint">思考长度不限，但每个决策点最多问 agent 这么多次</span>
+        </label>
+        <label>胜负规则
+          <select id="win-rule"><option value="edge">屠边</option><option value="city">屠城</option></select>
+        </label>
+        <label class="check"><input id="sheriff" type="checkbox" checked> 警长竞选（警徽流）</label>
+        <label class="check"><input id="explode" type="checkbox" checked> 允许狼人自爆</label>
+      </div>
+    </details>
+
+    <div id="llm-warn" class="warn hidden">
+      有座位选了 Claude。需要先 <code>pip install anthropic</code> 并设置
+      <code>ANTHROPIC_API_KEY</code>，否则这些座位会连续报错并退回安全默认动作。
+    </div>
+
+    <button id="start" class="primary">开始游戏（开局后自动跑完）</button>
+  </section>
+
+  <!-- ══════════ 对局 ══════════ -->
+  <section id="live" class="card hidden">
+    <h2>2 · 对局进行中</h2>
+    <div class="statusbar">
+      <span id="status-pill" class="pill">准备中</span>
+      <span id="phase-label"></span>
+      <span class="spacer"></span>
+      <label class="check"><input id="god-toggle" type="checkbox"> 上帝视角（看狼人频道和私聊）</label>
+      <button class="ghost" id="stop">中止</button>
+    </div>
+
+    <div id="seat-grid" class="seat-grid"></div>
+    <div id="feed" class="feed"></div>
+  </section>
+
+  <!-- ══════════ 复盘 ══════════ -->
+  <section id="review" class="card hidden">
+    <h2>3 · 复盘</h2>
+    <div id="result-banner"></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="tab-replay">战报</button>
+      <button class="tab" data-tab="tab-thoughts">心路历程</button>
+      <button class="tab" data-tab="tab-raw">原始数据</button>
+    </div>
+    <div id="tab-replay" class="tabpane"></div>
+    <div id="tab-thoughts" class="tabpane hidden"></div>
+    <div id="tab-raw" class="tabpane hidden">
+      <p class="hint">下面是这局的 13 份上下文（12 份个人视角 + 1 份狼队视角）和完整结果。</p>
+      <div class="inline">
+        <a id="dl-views" class="ghost" download="views.json">下载 13 份视角</a>
+        <a id="dl-result" class="ghost" download="result.json">下载结果</a>
+        <a id="dl-replay" class="ghost" download="replay.md">下载战报 Markdown</a>
+      </div>
+      <pre id="raw-pre"></pre>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

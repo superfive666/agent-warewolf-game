@@ -27,8 +27,112 @@ class HeuristicAgent:
 
     # ------------------------------------------------------------------
     def act(self, view: PlayerView, error: str | None = None) -> dict:
-        handler = getattr(self, "_" + view.legal_actions["action_type"])
-        return handler(view)
+        at = view.legal_actions["action_type"]
+        out = getattr(self, "_" + at)(view)
+        out["private_thought"] = self._explain(view, at, out, error)
+        return out
+
+    # ------------------------------------------------------------------
+    # 心路历程：把 bot 的打分过程翻译成人话，进复盘用
+    # ------------------------------------------------------------------
+    def _explain(self, view: PlayerView, at: str, out: dict, error: str | None) -> str:
+        bits = []
+        if error:
+            bits.append(f"上一次动作被判非法（{error}），这次改。")
+        idt = view.identity
+        bits.append(f"我是 {idt['seat']}号{idt['role_cn']}。")
+
+        score = self._suspicion(view)
+        ranked = sorted(
+            ((s, v) for s, v in score.items() if v > -50),
+            key=lambda kv: (-kv[1], kv[0]),
+        )[:3]
+        if ranked:
+            bits.append(
+                "当前嫌疑排序：" + "、".join(f"{s}号({v:+.1f})" for s, v in ranked) + "。"
+            )
+        if view.is_wolf:
+            wt = view.wolf_team
+            bits.append(f"狼队还剩 {wt.intel['alive_wolf_count']} 人，好人 {wt.intel['alive_good_count']} 人。")
+            if wt.intel["checks_on_us"]:
+                bits.append(
+                    "我方已被公开查杀：" + "、".join(
+                        f"{c['target']}号(被{c['by']}号)" for c in wt.intel["checks_on_us"]
+                    ) + "。"
+                )
+            if wt.intel["suspected_god_seats"]:
+                bits.append(f"疑似神职：{wt.intel['suspected_god_seats']}，屠边优先照顾他们。")
+        elif self.believed_seer is not None:
+            bits.append(
+                f"我选择相信 {self.believed_seer}号 是真预言家"
+                + ("（就是我自己）。" if self.believed_seer == view.seat else "，跟着他的查杀走。")
+            )
+        else:
+            bits.append("场上还没人起跳预言家，我没有硬信息，只能看发言和票型。")
+
+        bits.append(self._explain_action(view, at, out))
+        return "".join(bits)
+
+    def _explain_action(self, view: PlayerView, at: str, out: dict) -> str:
+        if at == "wolf_chat":
+            return f"我建议今晚刀 {out['kill_suggestion']}号。"
+        if at == "wolf_kill":
+            return f"我投票刀 {out['target']}号。" if out["target"] else "我投空刀。"
+        if at == "seer_check":
+            return f"今晚验 {out['target']}号，他是目前我最想确认的人。"
+        if at == "witch_action":
+            parts = []
+            parts.append("用解药救刀口。" if out["heal"] else "不用解药。")
+            parts.append(f"毒 {out['poison']}号。" if out["poison"] else "不用毒药。")
+            return "".join(parts)
+        if at == "sheriff_signup":
+            return "我决定上警。" if out["run"] else "我不上警。"
+        if at in ("speech", "sheriff_speech", "last_words"):
+            if out.get("explode"):
+                return "局势太差了，我选择自爆打断白天，给队友争取一晚。"
+            claim = out.get("claim")
+            c = f"我公开跳{Role(claim).cn}。" if claim else "我不起跳。"
+            if out.get("suspects"):
+                c += f"我指认 {out['suspects']}。"
+            return c
+        if at == "vote":
+            return f"我投 {out['target']}号。" if out["target"] else "我弃票。"
+        if at == "sheriff_vote":
+            return f"警长票投给 {out['target']}号。" if out["target"] else "警长票弃票。"
+        if at == "hunter_shoot":
+            return f"开枪带走 {out['target']}号。" if out["target"] else "我不开枪。"
+        if at == "badge_transfer":
+            return f"警徽交给 {out['target']}号。" if out["target"] else "我撕掉警徽。"
+        return ""
+
+    # ------------------------------------------------------------------
+    def _should_explode(self, view: PlayerView) -> bool:
+        """自爆判断：我马上要被票出去，而且自爆能给队友换一个晚上。"""
+        if not view.is_wolf or not view.wolf_team:
+            return False
+        if "explode" not in view.legal_actions["schema"]:
+            return False
+        alive_mates = [s for s in view.wolf_team.alive_wolves if s != view.seat]
+        if not alive_mates:
+            return False  # 最后一只狼自爆等于直接输，不如赌投票
+        ps = view.public_state
+        alive = ps["alive_seats"]
+        # 今天有多少人公开点了我的名
+        pressure = 0
+        for e in view.timeline:
+            if e["day"] != ps["day"] or e["type"] not in ("speech", "sheriff_speech", "pk_speech"):
+                continue
+            if view.seat in (e.get("payload") or {}).get("suspects", []):
+                pressure += 1
+        # 被真预言家查杀也是极大压力
+        checked = any(
+            c["target"] == view.seat and c["result"] == "WOLF"
+            for c in ps["public_check_claims"]
+        )
+        threshold = max(2, len(alive) // 3)
+        if pressure < threshold and not (checked and pressure >= 1):
+            return False
+        return self.rng.random() < 0.45
 
     # ------------------------------------------------------------------
     # 局势判断（只用视角里的信息）
@@ -331,6 +435,18 @@ class HeuristicAgent:
         else:
             text = f"我是好人。目前我最怀疑 {suspect}号，最信任 {trust}号。"
 
+        if self._should_explode(view):
+            mates = [s for s in view.wolf_team.alive_wolves if s != view.seat]
+            return {
+                "speech": f"不用投了，我自爆。{mates[0] if mates else ''}号你们继续，今天到此为止。",
+                "claim": "WEREWOLF",
+                "claim_detail": "自爆",
+                "claimed_check": None,
+                "suspects": [],
+                "trusts": [],
+                "explode": True,
+            }
+
         return {
             "speech": text,
             "claim": claim,
@@ -338,6 +454,7 @@ class HeuristicAgent:
             "claimed_check": claimed_check,
             "suspects": [suspect] if suspect else [],
             "trusts": [trust] if trust and trust != suspect else [],
+            "explode": False,
         }
 
     def _vote(self, view: PlayerView) -> dict:

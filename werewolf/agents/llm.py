@@ -27,13 +27,13 @@ class LLMAgent:
         *,
         model: str = DEFAULT_MODEL,
         effort: str = "medium",
-        max_tokens: int = 4000,
+        max_tokens: int = 16000,
         client=None,
         verbose: bool = False,
     ) -> None:
         self.seat = seat
         self.role = role
-        self.name = f"llm-{seat}"
+        self.name = f"llm-{seat}-{model}"
         self.model = model
         self.effort = effort
         self.max_tokens = max_tokens
@@ -69,18 +69,12 @@ class LLMAgent:
         self._messages.append({"role": "user", "content": user})
 
         action_type = view.legal_actions["action_type"]
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=[{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}],
-            messages=self._messages,
-            output_config={"effort": self.effort, "format": output_schema(action_type)},
-        )
+        response = self._call(action_type)
         self._track_usage(response)
 
         text = next((b.text for b in response.content if b.type == "text"), "")
         self._messages.append({"role": "assistant", "content": text})
-        # 只保留结构化动作，思考过程不回灌（省 token，且避免自我强化）
+        # 只回灌结构化动作，思考块不回灌（省 token，也避免自我强化）
         self._trim_history()
 
         try:
@@ -88,14 +82,31 @@ class LLMAgent:
         except json.JSONDecodeError as exc:
             raise ValueError(f"模型返回的不是合法 JSON：{text[:200]!r}") from exc
 
-        thought = data.pop("private_thought", "")
+        # private_thought 由引擎统一摘走并记进上帝日志，这里只做本地留档和打印
+        thought = data.get("private_thought", "")
         self.thoughts.append(
             {"seq": view.generated_at_seq, "day": view.public_state["day"],
              "action_type": action_type, "thought": thought}
         )
-        if self.verbose:
+        if self.verbose and thought:
             print(f"  [{self.seat}号 {self.role.cn} · {action_type}] 💭 {thought}")
         return data
+
+    def _call(self, action_type: str):
+        """思考长度不设上限，所以 max_tokens 给得大；超过 16K 时走流式避免 HTTP 超时。"""
+        kw = dict(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=[{"type": "text", "text": self._system,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=self._messages,
+            thinking={"type": "adaptive"},
+            output_config={"effort": self.effort, "format": output_schema(action_type)},
+        )
+        if self.max_tokens > 16000:
+            with self.client.messages.stream(**kw) as stream:
+                return stream.get_final_message()
+        return self.client.messages.create(**kw)
 
     # ------------------------------------------------------------------
     def _track_usage(self, response) -> None:
@@ -124,7 +135,7 @@ def make_agent_factory(
 ):
     """生成 agent 工厂：llm_seats 里的座位用 LLM，其余用规则 bot。
 
-    llm_seats=None 表示全部 12 个座位都用 LLM。
+    llm_seats=None 表示全部座位都用 LLM。更细粒度的按座位配模型见 werewolf.lineup。
     """
     from .heuristic import HeuristicAgent
 

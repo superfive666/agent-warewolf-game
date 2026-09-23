@@ -132,19 +132,35 @@ class TestLLMAgent(unittest.TestCase):
         for call in client.calls:
             self.assertEqual(call["system"][0]["cache_control"], {"type": "ephemeral"})
 
-    def test_private_thought_never_reaches_any_view(self):
+    def test_private_thought_only_lives_in_the_god_log(self):
+        """心路历程要进复盘（GOD 级），但绝不能进任何玩家能看到的事件或视角。"""
+        from werewolf.events import Audience
+        from werewolf.views import build_player_view
+
         client = FakeClient()
         state = new_game(GameConfig(seed=5))
         agents = {
             s: _TrackingLLMAgent(s, state.players[s].role, client=client)
             for s in state.seats
         }
-        state = Engine(state, agents).run()
+        snaps = []
+        state = Engine(state, agents,
+                       view_recorder=lambda t, se, at, v: snaps.append((se, v))).run()
+
+        # 记下来了（复盘要用）
         self.assertTrue(any(a.thoughts for a in agents.values()), "应该记录了内心想法")
-        dumped = json.dumps(
-            [e.as_dict() for e in state.event_log], ensure_ascii=False
-        )
-        self.assertNotIn("我在想", dumped, "private_thought 漏进了事件日志")
+        self.assertGreater(len(state.thought_log), 0)
+
+        # 但只在 GOD 级事件里
+        for e in state.event_log:
+            if "我在想" in e.text or "我在想" in json.dumps(e.payload, ensure_ascii=False):
+                self.assertIs(e.audience, Audience.GOD,
+                              f"心路历程出现在了非 GOD 事件里：{e.type}")
+
+        # 任何玩家视角里都没有
+        for seat, view in snaps:
+            self.assertNotIn("我在想", json.dumps(view.as_dict(), ensure_ascii=False),
+                             f"{seat}号的视角里出现了心路历程")
 
     def test_retry_on_invalid_action(self):
         """动作非法时，错误信息要回灌给模型并重试。"""

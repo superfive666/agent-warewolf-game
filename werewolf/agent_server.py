@@ -9,12 +9,14 @@
   GET  /session   导出完整会话（编排端在销毁容器【之前】必须调一次）
 
 环境变量：
-  WEREWOLF_SEAT        座位号（必填）
-  WEREWOLF_BACKEND     heuristic | llm
-  WEREWOLF_MODEL       llm 时的模型 id
-  WEREWOLF_EFFORT      low/medium/high/xhigh/max
-  WEREWOLF_MEMORY_DIR  私有 memory 卷的挂载点，默认 /memory
-  ANTHROPIC_API_KEY    llm 后端需要
+  WEREWOLF_SEAT         座位号（必填）
+  WEREWOLF_BACKEND      heuristic | claude | openai
+  WEREWOLF_MODEL        模型 id
+  WEREWOLF_EFFORT       low/medium/high/xhigh/max
+  WEREWOLF_BASE_URL     OpenAI 兼容网关地址（自建网关用）
+  WEREWOLF_API_KEY_ENV  去哪个环境变量取密钥（默认按后端取）
+  WEREWOLF_MEMORY_DIR   私有 memory 卷的挂载点，默认 /memory
+  ANTHROPIC_API_KEY / OPENAI_API_KEY   对应后端的密钥
 """
 from __future__ import annotations
 
@@ -33,15 +35,29 @@ def build_agent():
     role = Role(os.environ["WEREWOLF_ROLE"]) if os.environ.get("WEREWOLF_ROLE") else None
     memory_dir = Path(os.environ.get("WEREWOLF_MEMORY_DIR", "/memory")) / f"seat_{seat:02d}"
 
-    if backend == "llm":
+    effort = os.environ.get("WEREWOLF_EFFORT", "medium")
+    max_tokens = int(os.environ.get("WEREWOLF_MAX_TOKENS", "16000"))
+    key_env = os.environ.get("WEREWOLF_API_KEY_ENV") or ""
+
+    if backend in ("llm", "claude"):
         from .agents.llm import LLMAgent
 
         return LLMAgent(
             seat, role,
             model=os.environ.get("WEREWOLF_MODEL", "claude-opus-5"),
-            effort=os.environ.get("WEREWOLF_EFFORT", "medium"),
-            max_tokens=int(os.environ.get("WEREWOLF_MAX_TOKENS", "16000")),
-            memory_dir=memory_dir,
+            effort=effort, max_tokens=max_tokens, memory_dir=memory_dir,
+            api_key_env=key_env or "ANTHROPIC_API_KEY",
+        )
+    if backend == "openai":
+        from .agents.openai_agent import OpenAIAgent
+
+        return OpenAIAgent(
+            seat, role,
+            model=os.environ.get("WEREWOLF_MODEL", "gpt-5"),
+            base_url=os.environ.get("WEREWOLF_BASE_URL") or None,
+            max_tokens=max_tokens, memory_dir=memory_dir,
+            api_key_env=key_env or "OPENAI_API_KEY",
+            effort=effort if effort in ("low", "medium", "high") else None,
         )
     from .agents.heuristic import HeuristicAgent
 
@@ -71,7 +87,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             a = self.agent
             return self._json({
                 "seat": self.seat,
-                "backend": "llm" if hasattr(a, "model") else "heuristic",
+                "backend": getattr(a, "provider", "heuristic"),
                 "model": getattr(a, "model", None),
                 "role": getattr(getattr(a, "role", None), "value", None),
                 "system_prompt": getattr(a, "_system", None),

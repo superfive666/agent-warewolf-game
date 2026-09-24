@@ -220,6 +220,12 @@ class Handler(BaseHTTPRequestHandler):
                 "boards": {str(n): board_summary(n) for n in sorted(BOARDS)},
                 "models": AVAILABLE_MODELS,
                 "backends": AVAILABLE_BACKENDS,
+                # 哪些后端的密钥已经在环境里配好了，前端据此提示
+                "keys_present": {
+                    k: bool(os.environ.get(v["needs_key"]))
+                    for k, v in AVAILABLE_BACKENDS.items() if v.get("needs_key")
+                },
+                "base_url_env": os.environ.get("OPENAI_BASE_URL", ""),
                 "efforts": EFFORT_LEVELS,
                 "deployments": DEPLOYMENTS,
                 "store": STORE_URI,

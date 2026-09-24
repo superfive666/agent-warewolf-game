@@ -44,6 +44,8 @@ table#seats th{text-align:left;color:var(--dim);font-weight:500;font-size:13px;
   padding:6px 8px;border-bottom:1px solid var(--line)}
 table#seats td{padding:5px 8px;border-bottom:1px solid #1e222c}
 table#seats select{width:100%}
+table#seats input[type=text]{width:100%;margin-top:4px}
+#llm-warn b{color:#ffd479}
 
 .adv{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
 .adv summary{cursor:pointer;color:var(--dim)}

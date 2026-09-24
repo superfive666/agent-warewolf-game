@@ -27,11 +27,9 @@
     <div class="row">
       <label>快速套用</label>
       <div class="inline">
-        <select id="bulk-backend">
-          <option value="heuristic">规则 bot</option>
-          <option value="llm">Claude</option>
-        </select>
+        <select id="bulk-backend"></select>
         <select id="bulk-model"></select>
+        <input id="bulk-custom-model" type="text" placeholder="自定义模型名" class="hidden">
         <select id="bulk-effort"></select>
         <button class="ghost" id="bulk-apply">套用到全部座位</button>
       </div>
@@ -45,6 +43,14 @@
     <details class="adv">
       <summary>高级选项</summary>
       <div class="grid">
+        <label>OpenAI 兼容网关地址
+          <input id="base-url" type="text" placeholder="https://my-gateway/v1">
+          <span class="hint">留空则用服务端的 OPENAI_BASE_URL</span>
+        </label>
+        <label>密钥环境变量名
+          <input id="api-key-env" type="text" placeholder="OPENAI_API_KEY">
+          <span class="hint">这里填<b>变量名</b>，不是密钥。密钥只留在服务端环境里，不会进数据库</span>
+        </label>
         <label>随机种子<input id="seed" type="number" placeholder="留空 = 每局都不同"></label>
         <label>发言字数上限
           <input id="max-speech" type="number" value="450" min="50" max="2000">

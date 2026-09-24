@@ -85,6 +85,8 @@ class K8sRuntime(HttpRuntime):
             c.V1EnvVar(name="WEREWOLF_BACKEND", value=self.spec.backend),
             c.V1EnvVar(name="WEREWOLF_MODEL", value=self.spec.model),
             c.V1EnvVar(name="WEREWOLF_EFFORT", value=self.spec.effort),
+            c.V1EnvVar(name="WEREWOLF_BASE_URL", value=self.spec.base_url),
+            c.V1EnvVar(name="WEREWOLF_API_KEY_ENV", value=self.spec.api_key_env),
             c.V1EnvVar(name="WEREWOLF_MAX_TOKENS", value=str(self.spec.max_tokens)),
             c.V1EnvVar(name="WEREWOLF_MEMORY_DIR", value="/memory"),
             c.V1EnvVar(name="WEREWOLF_PORT", value="8100"),

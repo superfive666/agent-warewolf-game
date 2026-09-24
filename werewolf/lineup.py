@@ -4,28 +4,57 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+
+#: 环境变量名的合法形状
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 from .roles import Role
 
-#: 前端可选的模型。键是模型 ID，值是展示名和简介。
-AVAILABLE_MODELS = {
+#: Claude 后端的可选模型
+CLAUDE_MODELS = {
     "claude-opus-5": {"label": "Claude Opus 5", "note": "最强，推理和伪装都最好，也最贵"},
     "claude-sonnet-5": {"label": "Claude Sonnet 5", "note": "均衡，适合大部分座位"},
     "claude-haiku-4-5": {"label": "Claude Haiku 4.5", "note": "最快最便宜，适合平民位"},
 }
 
-AVAILABLE_BACKENDS = {
-    "heuristic": {"label": "规则 bot", "note": "零依赖、毫秒级、不花钱，用来凑桌或做对照组"},
-    "llm": {"label": "Claude", "note": "真正的 LLM agent，需要 ANTHROPIC_API_KEY"},
+#: OpenAI 后端的建议模型。**这只是建议** —— 自建网关可以服务任意模型名，
+#: 所以 openai 后端的 model 字段不做白名单校验。
+OPENAI_MODELS = {
+    "gpt-5": {"label": "GPT-5", "note": "默认"},
+    "gpt-5-mini": {"label": "GPT-5 mini", "note": "便宜，适合平民位"},
+    "o4-mini": {"label": "o4-mini", "note": "推理模型"},
 }
+
+#: 向后兼容：老的 "llm" 就是 Claude
+AVAILABLE_MODELS = CLAUDE_MODELS
+
+AVAILABLE_BACKENDS = {
+    "heuristic": {"label": "规则 bot", "note": "零依赖、毫秒级、不花钱，用来凑桌或做对照组",
+                  "models": {}, "needs_key": None},
+    "claude": {"label": "Claude", "note": "需要 ANTHROPIC_API_KEY",
+               "models": CLAUDE_MODELS, "needs_key": "ANTHROPIC_API_KEY",
+               "custom_model": False},
+    "openai": {"label": "OpenAI / 兼容网关",
+               "note": "需要 OPENAI_API_KEY；自建网关另设 OPENAI_BASE_URL。模型名可以随便填",
+               "models": OPENAI_MODELS, "needs_key": "OPENAI_API_KEY",
+               "custom_model": True},
+}
+
+#: "llm" 是 "claude" 的旧名字，继续接受
+BACKEND_ALIASES = {"llm": "claude"}
 
 EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 
 
 @dataclass
 class SeatSpec:
-    """一个座位的 agent 配置。"""
+    """一个座位的 agent 配置。
+
+    **这里不放 API key。** 阵容会原样写进会话库，密钥绝不能跟着进去 ——
+    所以只存"去哪个环境变量里取"（``api_key_env``），真正的密钥永远留在环境里。
+    """
 
     seat: int
     backend: str = "heuristic"
@@ -33,26 +62,47 @@ class SeatSpec:
     effort: str = "medium"
     #: 思考长度不限，但单次决策的 token 预算要给足
     max_tokens: int = 16000
+    #: OpenAI 兼容网关的地址。留空则读环境变量 OPENAI_BASE_URL
+    base_url: str = ""
+    #: 去哪个环境变量取密钥（存的是变量名，不是密钥本身）
+    api_key_env: str = ""
     label: str = ""
 
     def __post_init__(self) -> None:
+        self.backend = BACKEND_ALIASES.get(self.backend, self.backend)
         if self.backend not in AVAILABLE_BACKENDS:
             raise ValueError(f"未知后端 {self.backend}，可选 {sorted(AVAILABLE_BACKENDS)}")
-        if self.backend == "llm" and self.model not in AVAILABLE_MODELS:
-            raise ValueError(f"未知模型 {self.model}，可选 {sorted(AVAILABLE_MODELS)}")
+        info = AVAILABLE_BACKENDS[self.backend]
+
+        if self.backend == "claude" and self.model not in CLAUDE_MODELS:
+            raise ValueError(f"未知 Claude 模型 {self.model}，可选 {sorted(CLAUDE_MODELS)}")
+        if self.backend == "openai":
+            # 自建网关可以服务任意模型名，所以不做白名单，只要求非空
+            if not str(self.model).strip():
+                raise ValueError("openai 后端必须指定模型名")
+            if self.model in CLAUDE_MODELS:  # 一眼就是选错了后端
+                raise ValueError(f"{self.model} 是 Claude 模型，请把后端改成 claude")
         if self.effort not in EFFORT_LEVELS:
             raise ValueError(f"未知 effort {self.effort}，可选 {EFFORT_LEVELS}")
+        if self.api_key_env and not _ENV_NAME.match(self.api_key_env):
+            raise ValueError(f"api_key_env 必须是环境变量名，收到 {self.api_key_env!r}")
+        if not self.api_key_env and info.get("needs_key"):
+            self.api_key_env = info["needs_key"]
+        if self.base_url and not self.base_url.startswith(("http://", "https://")):
+            raise ValueError(f"base_url 必须以 http(s):// 开头，收到 {self.base_url!r}")
+
         if not self.label:
             self.label = (
-                AVAILABLE_BACKENDS["heuristic"]["label"]
-                if self.backend == "heuristic"
-                else AVAILABLE_MODELS[self.model]["label"]
+                info["label"] if self.backend == "heuristic"
+                else info["models"].get(self.model, {}).get("label") or self.model
             )
 
     def as_dict(self) -> dict:
         return {
             "seat": self.seat, "backend": self.backend, "model": self.model,
-            "effort": self.effort, "max_tokens": self.max_tokens, "label": self.label,
+            "effort": self.effort, "max_tokens": self.max_tokens,
+            "base_url": self.base_url, "api_key_env": self.api_key_env,
+            "label": self.label,
         }
 
 
@@ -71,17 +121,24 @@ class Lineup:
         specs = {}
         for s in range(1, n_players + 1):
             d = by_seat.get(s, {})
+            backend = BACKEND_ALIASES.get(d.get("backend", "heuristic"),
+                                          d.get("backend", "heuristic"))
+            default_model = "gpt-5" if backend == "openai" else "claude-opus-5"
+            # 注意：这里刻意不接受任何形如 api_key 的字段。
+            # 前端传进来的东西会原样入库，密钥只能走环境变量。
             specs[s] = SeatSpec(
                 seat=s,
-                backend=d.get("backend", "heuristic"),
-                model=d.get("model", "claude-opus-5"),
+                backend=backend,
+                model=(d.get("model") or default_model),
                 effort=d.get("effort", "medium"),
                 max_tokens=int(d.get("max_tokens", 16000)),
+                base_url=(d.get("base_url") or "").strip(),
+                api_key_env=(d.get("api_key_env") or "").strip(),
             )
         return cls(specs)
 
     def uses_llm(self) -> bool:
-        return any(sp.backend == "llm" for sp in self.specs.values())
+        return any(sp.backend != "heuristic" for sp in self.specs.values())
 
     def as_list(self) -> list[dict]:
         return [self.specs[s].as_dict() for s in sorted(self.specs)]
@@ -93,12 +150,22 @@ class Lineup:
         for seat in state.seats:
             sp = self.specs[seat]
             role: Role = state.players[seat].role
-            if sp.backend == "llm":
+            if sp.backend == "claude":
                 from .agents.llm import LLMAgent
 
                 agents[seat] = LLMAgent(
                     seat, role, model=sp.model, effort=sp.effort,
                     max_tokens=sp.max_tokens, verbose=verbose,
+                    api_key_env=sp.api_key_env or "ANTHROPIC_API_KEY",
+                )
+            elif sp.backend == "openai":
+                from .agents.openai_agent import OpenAIAgent
+
+                agents[seat] = OpenAIAgent(
+                    seat, role, model=sp.model, max_tokens=sp.max_tokens,
+                    base_url=sp.base_url or None, verbose=verbose,
+                    api_key_env=sp.api_key_env or "OPENAI_API_KEY",
+                    effort=sp.effort if sp.effort in ("low", "medium", "high") else None,
                 )
             else:
                 agents[seat] = HeuristicAgent(seat, role, seed=state.config.seed)

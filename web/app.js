@@ -32,7 +32,17 @@ async function init() {
     picker.appendChild(b);
   });
 
-  fillSelect($('#bulk-model'), Object.entries(OPTIONS.models).map(([k, v]) => [k, v.label]));
+  fillSelect($('#bulk-backend'),
+    Object.entries(OPTIONS.backends).map(([k, v]) => [k, v.label]));
+  const syncBulk = () => {
+    const b = OPTIONS.backends[$('#bulk-backend').value] || {};
+    fillSelect($('#bulk-model'), Object.entries(b.models || {}).map(([k, v]) => [k, v.label]));
+    const custom = !!b.custom_model;
+    $('#bulk-custom-model').classList.toggle('hidden', !custom);
+    $('#bulk-model').classList.toggle('hidden', !Object.keys(b.models || {}).length);
+  };
+  $('#bulk-backend').onchange = syncBulk;
+  syncBulk();
   fillSelect($('#bulk-effort'), OPTIONS.efforts.map((e) => [e, e]));
   fillSelect($('#deployment'), Object.keys(OPTIONS.deployments).map((k) => [k, k]));
   $('#deployment').value = OPTIONS.defaults.deployment || 'inprocess';
@@ -92,8 +102,11 @@ function renderSeats() {
     backend.className = 'seat-backend';
 
     const model = el('select');
-    fillSelect(model, Object.entries(OPTIONS.models).map(([k, v]) => [k, v.label]));
     model.className = 'seat-model';
+    const custom = el('input');
+    custom.type = 'text';
+    custom.className = 'seat-custom-model hidden';
+    custom.placeholder = '自定义模型名';
 
     const effort = el('select');
     fillSelect(effort, OPTIONS.efforts.map((e) => [e, e]));
@@ -101,15 +114,26 @@ function renderSeats() {
     effort.className = 'seat-effort';
 
     const sync = () => {
-      const isLLM = backend.value === 'llm';
-      model.disabled = !isLLM;
-      effort.disabled = !isLLM;
+      const b = OPTIONS.backends[backend.value] || {};
+      const models = b.models || {};
+      const hasModels = Object.keys(models).length > 0;
+      const prev = model.value;
+      fillSelect(model, Object.entries(models).map(([k, v]) => [k, v.label]));
+      if (prev && models[prev]) model.value = prev;
+      model.classList.toggle('hidden', !hasModels);
+      // 自建网关可以服务任意模型名，所以 openai 后端多给一个自由输入框
+      custom.classList.toggle('hidden', !b.custom_model);
+      effort.disabled = !hasModels;
       checkLLM();
     };
     backend.onchange = sync;
     sync();
 
-    [backend, model, effort].forEach((c) => {
+    const tdModel = el('td');
+    tdModel.appendChild(model);
+    tdModel.appendChild(custom);
+    [backend, tdModel, effort].forEach((c, i) => {
+      if (i === 1) { tr.appendChild(c); return; }
       const td = el('td');
       td.appendChild(c);
       tr.appendChild(td);
@@ -120,27 +144,49 @@ function renderSeats() {
 }
 
 function applyBulk() {
-  const b = $('#bulk-backend').value, m = $('#bulk-model').value, e = $('#bulk-effort').value;
+  const b = $('#bulk-backend').value, m = $('#bulk-model').value,
+        cm = $('#bulk-custom-model').value.trim(), e = $('#bulk-effort').value;
   document.querySelectorAll('.seat-backend').forEach((x) => { x.value = b; x.onchange(); });
-  document.querySelectorAll('.seat-model').forEach((x) => { x.value = m; });
+  document.querySelectorAll('.seat-model').forEach((x) => { if (m) x.value = m; });
+  document.querySelectorAll('.seat-custom-model').forEach((x) => { x.value = cm; });
   document.querySelectorAll('.seat-effort').forEach((x) => { x.value = e; });
   checkLLM();
 }
 
 function checkLLM() {
-  const any = [...document.querySelectorAll('.seat-backend')].some((x) => x.value === 'llm');
-  $('#llm-warn').classList.toggle('hidden', !any);
+  const used = new Set([...document.querySelectorAll('.seat-backend')]
+    .map((x) => x.value).filter((v) => v !== 'heuristic'));
+  const warn = $('#llm-warn');
+  if (!used.size) { warn.classList.add('hidden'); return; }
+  const missing = [...used].filter((b) => OPTIONS.keys_present && OPTIONS.keys_present[b] === false);
+  warn.classList.remove('hidden');
+  warn.innerHTML = '';
+  const names = [...used].map((b) => OPTIONS.backends[b].label).join('、');
+  warn.appendChild(document.createTextNode(`有座位选了 ${names}。`));
+  if (missing.length) {
+    const envs = missing.map((b) => OPTIONS.backends[b].needs_key).join(' / ');
+    warn.appendChild(el('b', null,
+      ` 服务端还没有设置 ${envs}，这些座位会连续报错并退回安全默认动作。`));
+  } else {
+    warn.appendChild(document.createTextNode(' 服务端已配置好密钥。'));
+  }
 }
 
 function collectSeats() {
   const backends = [...document.querySelectorAll('.seat-backend')];
   const models = [...document.querySelectorAll('.seat-model')];
+  const customs = [...document.querySelectorAll('.seat-custom-model')];
   const efforts = [...document.querySelectorAll('.seat-effort')];
+  const baseUrl = $('#base-url').value.trim();
+  const keyEnv = $('#api-key-env').value.trim();
+  // 注意：这里只传变量名，绝不传密钥 —— 阵容会原样写进会话库
   return backends.map((b, i) => ({
     seat: Number(b.dataset.seat),
     backend: b.value,
-    model: models[i].value,
+    model: (customs[i].value.trim() || models[i].value),
     effort: efforts[i].value,
+    base_url: baseUrl,
+    api_key_env: keyEnv,
   }));
 }
 

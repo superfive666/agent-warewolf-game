@@ -37,17 +37,27 @@ def build_parser() -> argparse.ArgumentParser:
   python3 run_game.py -n 9                     # 9 人局
   python3 run_game.py --seed 7 --show-wolves   # 固定牌局并显示狼人频道
   python3 run_game.py --games 100 --quiet      # 跑 100 局统计胜率
-  python3 run_game.py --backend llm            # 12 个 Claude agent 打一局
-  python3 run_game.py --backend llm --llm-seats 1,2,3   # 3 个 LLM + 9 个 bot
+  python3 run_game.py --backend claude         # 12 个 Claude agent 打一局
+  python3 run_game.py --backend openai --model gpt-5           # 用 OpenAI
+  python3 run_game.py --backend openai --model qwen-max \\
+      --base-url https://my-gateway/v1                         # 自建/兼容网关
+  python3 run_game.py --backend claude --llm-seats 1,2,3       # 3 个 LLM + 9 个 bot
 """,
     )
     p.add_argument("-n", "--n-players", type=int, default=12, choices=sorted(BOARDS),
                    help="人数（板子）")
     p.add_argument("--seed", type=int, default=None, help="随机种子，固定后牌局完全可复现")
     p.add_argument("--games", type=int, default=1, help="连打多少局（>1 时只输出统计）")
-    p.add_argument("--backend", choices=["heuristic", "llm"], default="heuristic")
+    p.add_argument("--backend", choices=["heuristic", "llm", "claude", "openai"],
+                   default="heuristic", help="llm 是 claude 的旧名字")
     p.add_argument("--llm-seats", default=None, help="哪些座位用 LLM，如 1,2,3；默认全部")
-    p.add_argument("--model", default="claude-opus-5")
+    p.add_argument("--model", default=None,
+                   help="模型 id。openai 后端可以随便填（自建网关的模型名）")
+    p.add_argument("--base-url", default=None,
+                   help="OpenAI 兼容网关地址，如 https://my-gateway/v1"
+                        "（也可用环境变量 OPENAI_BASE_URL）")
+    p.add_argument("--api-key-env", default=None,
+                   help="去哪个环境变量取密钥。注意这里填【变量名】，不是密钥本身")
     p.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--win-rule", choices=["edge", "city"], default="edge", help="edge=屠边 city=屠城")
     p.add_argument("--no-sheriff", action="store_true", help="关闭警长竞选")
@@ -87,10 +97,13 @@ def run_one(args, seed: int | None, quiet: bool) -> tuple:
     seats_payload = [
         {
             "seat": s,
-            "backend": "llm" if (args.backend == "llm" and (llm_seats is None or s in llm_seats))
-                       else "heuristic",
-            "model": args.model,
+            "backend": (args.backend
+                        if args.backend != "heuristic" and (llm_seats is None or s in llm_seats)
+                        else "heuristic"),
+            "model": args.model or ("gpt-5" if args.backend == "openai" else "claude-opus-5"),
             "effort": args.effort,
+            "base_url": args.base_url or "",
+            "api_key_env": args.api_key_env or "",
         }
         for s in range(1, args.n_players + 1)
     ]

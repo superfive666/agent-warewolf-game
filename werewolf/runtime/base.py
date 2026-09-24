@@ -68,7 +68,9 @@ class LocalRuntime:
     def snapshot_session(self) -> dict:
         a = self.agent
         return {
-            "backend": "llm" if hasattr(a, "model") else "heuristic",
+            # 用 agent 自己声明的 provider（claude / openai / heuristic），
+            # 不要靠"有没有 model 属性"猜 —— 那会把所有 LLM 都标成 llm
+            "backend": getattr(a, "provider", "heuristic"),
             "model": getattr(a, "model", None),
             "system_prompt": getattr(a, "_system", None),
             "messages": list(getattr(a, "_messages", []) or []),

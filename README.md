@@ -17,7 +17,7 @@ python3 run_server.py      # 打开 http://127.0.0.1:8000
 ## 它能做什么
 
 - **可变板子**：6 / 8 / 9 / 10 / 12 人，全部屠边局
-- **每个座位单独配 agent**：规则 bot / Claude Opus 5 / Sonnet 5 / Haiku 4.5，还能分别设思考强度
+- **每个座位单独配 agent**：规则 bot / Claude / OpenAI / 任意 OpenAI 兼容网关，还能分别设模型和思考强度
 - **完整规则**：警长竞选（上警→警上发言→退水→投票→警徽移交/撕毁）、狼人夜间协商刀人、
   女巫解药毒药、预言家验人、猎人开枪、白痴翻牌、平票 PK、**狼人自爆**
 - **像真人一样发言**：每次发言有字数上限（默认 450 字 ≈ 真人讲 2 分钟），超长会被打回重说
@@ -56,10 +56,16 @@ python3 run_game.py --games 200            # 跑 200 局统计胜率
 python3 run_game.py --no-explode           # 禁止自爆
 python3 run_game.py --max-speech-chars 300 # 发言限制更短
 
-# 真 LLM
+# 真 LLM —— Claude
 pip install -r requirements-llm.txt && export ANTHROPIC_API_KEY=...
-python3 run_game.py --backend llm --show-thoughts
-python3 run_game.py --backend llm --llm-seats 1,2,3   # 3 个 LLM + 9 个 bot，先小成本试
+python3 run_game.py --backend claude --show-thoughts
+
+# 真 LLM —— OpenAI 或任意兼容网关
+pip install -r requirements-openai.txt
+export OPENAI_API_KEY=... OPENAI_BASE_URL=https://my-gateway/v1
+python3 run_game.py --backend openai --model qwen-max
+
+python3 run_game.py --backend openai --llm-seats 1,2,3   # 3 个 LLM + 9 个 bot，先小成本试
 
 # 测试
 python3 -m unittest discover -s tests -t .
@@ -81,6 +87,7 @@ python3 -m unittest discover -s tests -t .
 | [`docs/03-技术设计.md`](docs/03-技术设计.md) | 事件日志与信息隔离、视角生成、agent 接口、沙箱 HTTP 服务 |
 | [`docs/04-视角与上下文.md`](docs/04-视角与上下文.md) | **N 份个人视角 + 1 份狼队视角的完整 JSON 规范** |
 | [`docs/05-部署与会话存储.md`](docs/05-部署与会话存储.md) | 四种部署模式、agent 容器契约、私有 memory 卷、会话存储（DB vs 文件）、座位生命周期 |
+| [`docs/06-模型后端.md`](docs/06-模型后端.md) | Claude / OpenAI / 兼容网关、密钥安全、能力自动降级 |
 
 ---
 
@@ -151,7 +158,7 @@ def visible_to_seat(event, seat, is_wolf):
 
 ```
 $ python3 -m unittest discover -s tests -t .
-Ran 97 tests in 40s
+Ran 120 tests in 30s
 OK
 ```
 
@@ -162,7 +169,8 @@ OK
 | 后端 | 说明 |
 |---|---|
 | `heuristic`（默认） | 纯 Python 规则 bot，零依赖。会悍跳、跟查杀、做站边分析、在压力下自爆，并且会输出自己的心路历程。毫秒级跑完一局。 |
-| `llm` | 调 Claude Messages API。**每个座位可以单独指定模型和 effort**，每个座位一个独立会话，座位之间没有任何共享对象。 |
+| `claude` | 调 Claude Messages API。**每个座位可以单独指定模型和 effort**，每个座位一个独立会话，座位之间没有任何共享对象。 |
+| `openai` | 调 OpenAI Chat Completions，**也支持任何 OpenAI 兼容网关**（自定义 base_url + 任意模型名）。会自己试出网关支持哪一档结构化输出并记住。 |
 
 两者走**完全相同的信息通道**——都只拿到 `PlayerView`，没有后门。可以任意混搭。
 
@@ -269,12 +277,15 @@ werewolf/
 └── agents/
     ├── base.py       Agent 接口（只有 act(view) 一个方法）
     ├── heuristic.py  规则 bot
-    └── llm.py        Claude API 后端（支持私有 memory 目录）
+    ├── chat_base.py  两个 LLM 后端共用的部分（历史、笔记本、JSON 抽取）
+    ├── llm.py        Claude 后端
+    └── openai_agent.py  OpenAI / 兼容网关后端（能力自动降级）
 ```
 
 ## 依赖
 
 - **规则 bot + 网页沙箱**：只需要 Python 3.11+，**零第三方依赖**（前端也没有构建步骤）
-- **LLM 后端**：`pip install -r requirements-llm.txt`，并设置 `ANTHROPIC_API_KEY`
+- **Claude 后端**：`pip install -r requirements-llm.txt`，并设置 `ANTHROPIC_API_KEY`
+- **OpenAI / 兼容网关后端**：`pip install -r requirements-openai.txt`，并设置 `OPENAI_API_KEY`（自建网关另设 `OPENAI_BASE_URL`）
 - **k8s 部署**：`pip install -r requirements-k8s.txt`（官方 kubernetes SDK）
 - **会话存储**：SQLite 走标准库 `sqlite3`，不需要装任何东西

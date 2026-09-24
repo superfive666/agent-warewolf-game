@@ -117,7 +117,16 @@ class LLMAgent:
             self.usage[k] += getattr(u, k, 0) or 0
 
     def _trim_history(self, keep_turns: int = 24) -> None:
-        """只保留最近 N 轮对话。更早的信息在每回合的局势摘要里已经重新给过了。"""
+        """只保留最近 N 轮对话。
+
+        这样做是安全的，因为**每回合的 user 消息里都会重发一份完整的发言档案**
+        （见 prompts._fmt_speech_archive）和全部票型——也就是说，盘逻辑需要的原始材料
+        不依赖对话历史，裁掉的只是 agent 自己早期的措辞。
+
+        （早期版本这里的注释声称"摘要里已经重新给过了"，但当时的摘要只有身份宣称和
+        最近两轮票型，没有任何发言原文，导致 agent 在第 24 轮之后永久丢失第一天的发言。
+        这是让对局读起来不像真人的主要原因之一。）
+        """
         if len(self._messages) > keep_turns * 2:
             self._messages = self._messages[-keep_turns * 2:]
             # 历史必须以 user 开头

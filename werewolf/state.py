@@ -95,6 +95,8 @@ class GameState:
             "tonight_target": None,
             "protect": [],
             "push_target": None,
+            #: 狼队白天分工 {座位: 悍跳/冲锋/倒钩/深水}
+            "assignments": {},
             "notes": "",
         }
     )
@@ -103,6 +105,10 @@ class GameState:
     public_claims: dict[int, dict] = field(default_factory=dict)
     #: 公开宣称的验人结果 [{day, by, target, result}]，只记录"谁说了什么"，不校验真假
     public_check_claims: list[dict] = field(default_factory=list)
+    #: 公开报出的警徽流 [{day, by, targets:[座位]}]。真预言家和悍跳狼都会报，引擎不判真假
+    public_badge_flows: list[dict] = field(default_factory=list)
+    #: 全部公开发言的原文档案。真人靠"你第一天说过X"盘逻辑，agent 也必须拿得到原文
+    speech_log: list[dict] = field(default_factory=list)
     witch_potion_log: list[dict] = field(default_factory=list)
     #: 心路历程：每个决策点 agent 的内心想法，只进复盘，绝不进任何玩家视角
     thought_log: list[dict] = field(default_factory=list)

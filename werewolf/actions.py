@@ -11,6 +11,14 @@ from .state import GameState
 
 CLAIMABLE_ROLES = [r.value for r in Role]
 
+#: 狼队的四种白天定位。真人狼队第一夜就会分工，这是狼人配合的基本盘。
+WOLF_POSITIONS = {
+    "HARD_CLAIM": "悍跳 —— 冒充预言家，给一个好人发查杀，跟真预言家对跳抢警徽",
+    "CHARGE": "冲锋 —— 扮平民，但强势站边自家悍跳，帮他归票、打真预言家",
+    "BACKHOOK": "倒钩 —— 扮平民，反过来站边【真】预言家骗信任，后期再反水",
+    "DEEP": "深水 —— 扮平民，少说少错，把发言权让给队友，保存到后期",
+}
+
 ACTION_TYPES = (
     "wolf_chat",
     "wolf_kill",
@@ -59,6 +67,11 @@ def _speech_schema(max_chars: int) -> dict:
             "required": False,
             "desc": '若你以预言家身份公布验人结果，填 {"target": 座位号, "result": "WOLF" 或 "GOOD"}',
         },
+        "badge_flow": {
+            "type": "array<int>", "required": False,
+            "desc": "警徽流：你以预言家身份公布的【今晚和明晚要验谁】，最多 3 个座位。"
+                    "真预言家靠它在自己死后仍然指挥好人；悍跳狼也会报假警徽流。不报就留空数组。",
+        },
         "suspects": {"type": "array<int>", "required": False, "desc": "你本轮怀疑的座位"},
         "trusts": {"type": "array<int>", "required": False, "desc": "你本轮信任的座位"},
     }
@@ -77,6 +90,16 @@ def legal_actions(state: GameState, seat: int, action_type: str, ctx: dict | Non
             "schema": {
                 "speech": {"type": "string", "required": True, "desc": "对狼队友说的话"},
                 "kill_suggestion": {"type": "int|null", "options": alive + [None], "desc": "建议今晚刀谁"},
+                "my_position": {
+                    "type": "enum", "required": False,
+                    "options": list(WOLF_POSITIONS) + [None],
+                    "desc": "你认领今天白天打哪个定位。" + "；".join(WOLF_POSITIONS.values()),
+                },
+                "position_plan": {
+                    "type": "object", "required": False,
+                    "desc": '给全队的分工建议，形如 {"4": "HARD_CLAIM", "7": "CHARGE"}。'
+                            "一队通常只出一个悍跳，其余分倒钩和深水。",
+                },
                 "strategy_note": {"type": "string", "required": False, "desc": "写进狼队战术板的备注（跨夜保留）"},
             },
         }
@@ -252,7 +275,9 @@ def _check_length(text: str, max_chars: int) -> str:
     return text
 
 
-def _clean_speech_fields(raw: dict, alive: list[int], max_chars: int = 450) -> dict:
+def _clean_speech_fields(
+    raw: dict, alive: list[int], max_chars: int = 450, *, alive_only: list[int] | None = None
+) -> dict:
     claim = raw.get("claim")
     if isinstance(claim, str):
         claim = claim.strip().upper()
@@ -275,8 +300,12 @@ def _clean_speech_fields(raw: dict, alive: list[int], max_chars: int = 450) -> d
             claimed_check = {"target": t, "result": r}
 
     speech = _as_text(raw.get("speech"), "speech", "（该玩家没有发言）") or "（该玩家没有发言）"
+    # 警徽流说的是"接下来要验谁"，只能指向活人。
+    # 遗言里 alive 参数是全部座位（允许提到死人），所以这里要用单独的存活名单。
+    badge_flow = _as_seat_list(raw.get("badge_flow"), alive_only if alive_only is not None else alive)[:3]
     return {
         "speech": _check_length(speech, max_chars),
+        "badge_flow": badge_flow,
         "claim": claim,
         "claim_detail": _as_text(raw.get("claim_detail"), "claim_detail"),
         "claimed_check": claimed_check,
@@ -297,9 +326,22 @@ def validate(state: GameState, seat: int, action_type: str, raw: dict, ctx: dict
     p = state.players[seat]
 
     if action_type == "wolf_chat":
+        pos = raw.get("my_position")
+        pos = pos if isinstance(pos, str) and pos.upper() in WOLF_POSITIONS else None
+        plan = {}
+        if isinstance(raw.get("position_plan"), dict):
+            for k, v in raw["position_plan"].items():
+                try:
+                    k = int(k)
+                except (TypeError, ValueError):
+                    continue
+                if k in state.wolf_seats() and isinstance(v, str) and v.upper() in WOLF_POSITIONS:
+                    plan[k] = v.upper()
         return {
             "speech": _as_text(raw.get("speech"), "speech", "（沉默）") or "（沉默）",
             "kill_suggestion": _as_seat(raw.get("kill_suggestion"), alive, "kill_suggestion"),
+            "my_position": pos.upper() if pos else None,
+            "position_plan": plan,
             "strategy_note": _as_text(raw.get("strategy_note"), "strategy_note"),
         }
 
@@ -366,7 +408,8 @@ def validate(state: GameState, seat: int, action_type: str, raw: dict, ctx: dict
         }
 
     if action_type == "last_words":
-        out = _clean_speech_fields(raw, state.seats, state.config.max_speech_chars)
+        out = _clean_speech_fields(raw, state.seats, state.config.max_speech_chars,
+                                   alive_only=alive)
         out.pop("trusts", None)
         return out
 
@@ -384,7 +427,8 @@ def default_action(state: GameState, seat: int, action_type: str, ctx: dict | No
     rng = state.rng
 
     if action_type == "wolf_chat":
-        return {"speech": "（沉默）", "kill_suggestion": None, "strategy_note": ""}
+        return {"speech": "（沉默）", "kill_suggestion": None,
+                "my_position": None, "position_plan": {}, "strategy_note": ""}
     if action_type == "wolf_kill":
         pool = [s for s in alive if not state.is_wolf(s)] or others
         return {"target": rng.choice(pool) if pool else None}
@@ -403,6 +447,7 @@ def default_action(state: GameState, seat: int, action_type: str, ctx: dict | No
             "claim": None,
             "claim_detail": "",
             "claimed_check": None,
+            "badge_flow": [],
             "suspects": [],
             "trusts": [],
         }

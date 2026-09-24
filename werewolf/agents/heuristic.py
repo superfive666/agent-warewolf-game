@@ -24,6 +24,11 @@ class HeuristicAgent:
         self.rng = random.Random((seed or 0) * 100 + seat)
         self.believed_seer: int | None = None
         self.claimed_seer_already = False
+        #: 自己公开报出的警徽流，后续验人要兑现
+        self.my_badge_flow: list[int] = []
+        #: 悍跳狼记住自己编过的身份和查杀，后续发言必须圆回来
+        self.fake_claim: str | None = None
+        self.fake_check: dict | None = None
 
     # ------------------------------------------------------------------
     def act(self, view: PlayerView, error: str | None = None) -> dict:
@@ -106,6 +111,42 @@ class HeuristicAgent:
         return ""
 
     # ------------------------------------------------------------------
+    def _wolf_position_speech(self, view: PlayerView, suspect):
+        """按狼队分工说不同的话 —— 倒钩和冲锋在真人局里是完全相反的两种发言。"""
+        wt = view.wolf_team
+        ps = view.public_state
+        pos = (wt.strategy_board.get("assignments") or {}).get(str(view.seat), "DEEP") if wt else "DEEP"
+        mates = self._teammates(view)
+        claimed_seers = [int(x) for x, c in ps["public_claims"].items() if c.get("claim") == "SEER"]
+        our_seer = next((x for x in claimed_seers if x in mates), None)
+        their_seer = next((x for x in claimed_seers if x not in mates), None)
+
+        if pos == "CHARGE" and our_seer is not None:
+            # 冲锋：强势站边自家悍跳，打对面那个预言家
+            t = their_seer if their_seer is not None else suspect
+            return (f"我是个普通村民。我听 {our_seer}号 的发言更像真预言家，"
+                    f"他的警徽流给得干净。{t}号 那边我不信，今天我跟票走 {t}号。"), t, [our_seer]
+        if pos == "BACKHOOK" and their_seer is not None:
+            # 倒钩：反过来站边对面的真预言家骗信任。
+            # 但他的查杀如果指向我或我的队友，就不能顺着他走 —— 那等于亲手卖队友。
+            t = their_seer
+            checked = [
+                c["target"] for c in ps["public_check_claims"]
+                if c["by"] == t and c["result"] == "WOLF" and c["target"] not in mates
+            ]
+            if checked:
+                tgt = checked[0]
+                return (f"我是个普通村民。我选择相信 {t}号 是真预言家，他的验人理由说得通，"
+                        f"那 {tgt}号 就该走。我今天票 {tgt}号。"), tgt, [t]
+            # 他查杀的是自己人：只认他的身份，不认这张查杀
+            return (f"我是个普通村民。{t}号 的发言我是信的，位置和逻辑都对。"
+                    f"但他那张查杀我保留意见，我先不跟这张票，听听后面。"), None, [t]
+        if pos == "HARD_CLAIM":
+            return (f"我是个普通村民。听下来 {suspect}号 的发言最有问题，我站边票他。"), suspect, []
+        # 深水：少说少错，不给强判断
+        return (f"我是个普通村民。前面几个人我还听不太出来，"
+                f"{suspect}号 稍微有点问题但我不敢打死，先过，听后面的。"), suspect, []
+
     def _should_explode(self, view: PlayerView) -> bool:
         """自爆判断：我马上要被票出去，而且自爆能给队友换一个晚上。"""
         if not view.is_wolf or not view.wolf_team:
@@ -182,6 +223,18 @@ class HeuristicAgent:
             for s in claimed_seers:
                 if s in score and s != self.believed_seer:
                     score[s] += 4.0
+            # 站边分析（发言版）：谁在帮我不信的那个"预言家"说话，谁就可疑。
+            # 真人局里冲锋狼就是这么被抓出来的。
+            fakes = {s for s in claimed_seers if s != self.believed_seer}
+            for sp in ps["speech_archive"]:
+                sp_seat = sp["seat"]
+                if sp_seat == view.seat or sp_seat not in score:
+                    continue
+                for t in sp["trusts"]:
+                    if t in fakes:
+                        score[sp_seat] += 2.0
+                    elif t == self.believed_seer:
+                        score[sp_seat] -= 0.8
             # 我自己是神但被查杀了 → 查杀我的人是狼
             for c in ps["public_check_claims"]:
                 if c["target"] == view.seat and c["result"] == "WOLF" and c["by"] in score:
@@ -234,7 +287,21 @@ class HeuristicAgent:
             c["by"] for c in ps["public_check_claims"]
             if c["target"] == view.seat and c["result"] == "WOLF"
         }
-        candidates = [s for s in claimed_seers if s not in liars] or claimed_seers
+        # 警徽流是承诺。改过口的那个，真人局里会被直接打成狼
+        flows: dict[int, list] = {}
+        flip_floppers = set()
+        for b in ps["public_badge_flows"]:
+            prev = flows.get(b["by"])
+            if prev is not None and set(prev) != set(b["targets"]):
+                flip_floppers.add(b["by"])
+            flows[b["by"]] = b["targets"]
+        # 报了警徽流的比没报的可信 —— 不留警徽流的"预言家"一眼假
+        gave_flow = {s for s in claimed_seers if s in flows}
+        candidates = [
+            s for s in claimed_seers if s not in liars and s not in flip_floppers
+        ] or [s for s in claimed_seers if s not in liars] or claimed_seers
+        if gave_flow & set(candidates):
+            candidates = [s for s in candidates if s in gave_flow]
         if self.believed_seer in candidates:
             return
         # 其余按"谁先起跳"排（真预言家通常首日就跳），死了也继续信他的验人结果
@@ -259,13 +326,32 @@ class HeuristicAgent:
         target = self._pick_kill_target(view)
         board = wt.strategy_board if wt else {}
         gods = (wt.intel["suspected_god_seats"] if wt else []) or []
-        if gods:
-            reason = f"{gods[0]}号公开跳了神，优先屠边"
+        reason = (f"{gods[0]}号公开跳了神，优先屠边" if gods
+                  else "场上还没人起跳，先刀一个位置好的")
+
+        # 分工：座位号最小的狼悍跳，下一个倒钩，其余深水
+        alive = sorted(wt.alive_wolves) if wt else [view.seat]
+        assigned = (board.get("assignments") or {}).get(str(view.seat))
+        if assigned:
+            my_pos = assigned
+        elif view.seat == alive[0]:
+            my_pos = "HARD_CLAIM"
+        elif len(alive) > 1 and view.seat == alive[1]:
+            my_pos = "BACKHOOK"
         else:
-            reason = "场上还没人起跳，先刀一个位置好的"
+            my_pos = "DEEP"
+        plan = {}
+        if view.seat == alive[0]:
+            for i, m in enumerate(alive):
+                plan[str(m)] = ("HARD_CLAIM" if i == 0 else
+                                "BACKHOOK" if i == 1 else
+                                "CHARGE" if i == 2 else "DEEP")
+        pos_cn = {"HARD_CLAIM": "悍跳", "CHARGE": "冲锋", "BACKHOOK": "倒钩", "DEEP": "深水"}[my_pos]
         return {
-            "speech": f"我建议今晚刀 {target}号 —— {reason}。白天我走好人路线，别互相踩。",
+            "speech": f"我建议今晚刀 {target}号 —— {reason}。白天我打{pos_cn}，别互相踩。",
             "kill_suggestion": target,
+            "my_position": my_pos,
+            "position_plan": plan,
             "strategy_note": board.get("notes") or f"优先屠神，当前目标 {target}号",
         }
 
@@ -331,11 +417,32 @@ class HeuristicAgent:
                     break
         return {"heal": heal, "poison": poison}
 
+    def _make_badge_flow(self, view: PlayerView) -> list[int]:
+        """挑今明两晚要验的目标，公开报出去当警徽流。
+
+        报出去之后就不再改口——真人预言家的警徽流是承诺，改来改去等于自证是狼。
+        只有当原目标已经死了或已经验过，才补新的。
+        """
+        checked = {c["target"] for c in view.identity["role_knowledge"].get("checks", [])}
+        alive = set(view.public_state["alive_seats"])
+        kept = [t for t in self.my_badge_flow if t in alive and t not in checked]
+        if len(kept) >= 2:
+            return kept[:2]
+        score = self._suspicion(view)
+        pool = [
+            s for s in view.public_state["alive_seats"]
+            if s != view.seat and s not in checked and s not in kept
+        ]
+        return (kept + sorted(pool, key=lambda s: (-score.get(s, 0.0), s)))[:2]
+
     def _seer_check(self, view: PlayerView) -> dict:
         options = view.legal_actions["schema"]["target"]["options"]
         if not options:
             return {"target": None}
-        # 优先验"还没被验过、且当前嫌疑最高"的人
+        # 说到做到：优先兑现自己公开报出的警徽流，这本身就是身份证明
+        for t in self.my_badge_flow:
+            if t in options:
+                return {"target": t}
         score = self._suspicion(view)
         ranked = sorted(options, key=lambda s: (-score.get(s, 0.0), s))
         return {"target": ranked[0]}
@@ -379,6 +486,17 @@ class HeuristicAgent:
             mates = [s for s in self._teammates(view) if s in opts]
             if mates:
                 return {"target": mates[0], "reason": "给队友"}
+        # 按警徽流判定：验出来都是狼就飞外置位，有金水就飞金水
+        if view.role is Role.SEER:
+            checks = {c["target"]: c["result"] for c in view.identity["role_knowledge"]["checks"]}
+            golden = [t for t in self.my_badge_flow if checks.get(t) == "GOOD" and t in opts]
+            if golden:
+                return {"target": golden[0], "reason": "警徽流里的金水，按约定飞给他"}
+            if self.my_badge_flow and all(checks.get(t) == "WOLF" for t in self.my_badge_flow):
+                outside = [s for s in opts if s not in self.my_badge_flow]
+                if outside:
+                    return {"target": min(outside, key=lambda s: (score.get(s, 0.0), s)),
+                            "reason": "警徽流两个都是狼，按约定飞外置位"}
         return {"target": min(opts, key=lambda s: (score.get(s, 0.0), s)), "reason": "交给我最信的人"}
 
     # ------------------------------------------------------------------
@@ -395,6 +513,7 @@ class HeuristicAgent:
         claimed_check = None
         rk = view.identity["role_knowledge"]
 
+        badge_flow = []
         if view.role is Role.SEER and rk["checks"]:
             last = rk["checks"][-1]
             claim, self.claimed_seer_already = "SEER", True
@@ -403,28 +522,65 @@ class HeuristicAgent:
                 for c in rk["checks"]
             )
             claimed_check = {"target": last["target"], "result": last["result"]}
+            # 三部曲：报查验 → 留警徽流 → 讲心路历程
+            badge_flow = self._make_badge_flow(view)
+            self.my_badge_flow = badge_flow
+            bf = "、".join(f"{t}号" for t in badge_flow)
             text = (
                 f"我是预言家。{claim_detail}。"
+                f"警徽流{bf}：都查杀就外置位飞警徽，都金水就撕警徽，一好一狼飞好人。"
+                f"我验{last['target']}号是因为他的位置和发言最值得确认。"
                 f"今天请归票 {last['target'] if last['result'] == 'WOLF' else suspect}号。"
             )
             if last["result"] == "WOLF":
                 suspect = last["target"]
         elif view.is_wolf:
-            mates = sorted(view.wolf_team.alive_wolves) if view.wolf_team else []
+            mates_alive = sorted(view.wolf_team.alive_wolves) if view.wolf_team else []
             already_faked = view.wolf_team.intel["our_claimed_gods"] if view.wolf_team else []
-            if mates and view.seat == mates[0] and not already_faked and ps["day"] <= 1:
-                # 悍跳预言家：给一个好人发查杀
-                fake_target = suspect or (
-                    [s for s in ps["alive_seats"] if s not in self._teammates(view)] or [None]
-                )[0]
+            pos = ((view.wolf_team.strategy_board.get("assignments") or {})
+                   .get(str(view.seat), "DEEP") if view.wolf_team else "DEEP")
+
+            if self.fake_claim == "SEER":
+                # 已经悍跳过了，必须一路跳到底。改口说自己是平民等于当场自曝。
+                # 警徽流沿用原来那份，但死掉的目标要剔除（那是履约进度，不算改口）
                 claim = "SEER"
+                claimed_check = dict(self.fake_check) if self.fake_check else None
+                alive_now = set(ps["alive_seats"])
+                badge_flow = [t for t in self.my_badge_flow if t in alive_now]
+                self.my_badge_flow = badge_flow
+                claim_detail = (
+                    f"第1夜验{self.fake_check['target']}号=查杀" if self.fake_check else "")
+                rival = next(
+                    (int(x) for x, c in ps["public_claims"].items()
+                     if c.get("claim") == "SEER" and int(x) != view.seat),
+                    None,
+                )
+                tgt = (self.fake_check or {}).get("target", suspect)
+                text = (f"我还是那句话，我是预言家，{tgt}号是我的查杀，警徽流没变。"
+                        + (f"{rival}号跟我对跳，但他的验人理由站不住。" if rival else "")
+                        + f"今天归票 {tgt}号。")
+                suspect = tgt
+            elif (pos == "HARD_CLAIM" and not already_faked
+                  and ps["day"] <= 1 and mates_alive and view.seat == mates_alive[0]):
+                # 悍跳预言家：给一个好人发查杀，并且把警徽流也编出来
+                fake_target = suspect or next(
+                    (s for s in ps["alive_seats"] if s not in self._teammates(view)), None)
+                claim = "SEER"
+                self.fake_claim = "SEER"
                 claim_detail = f"第1夜验{fake_target}号=查杀"
                 claimed_check = {"target": fake_target, "result": "WOLF"}
-                text = f"我是预言家，昨晚验的 {fake_target}号 是查杀，今天必须走掉他。"
+                self.fake_check = dict(claimed_check)
+                badge_flow = self._make_badge_flow(view)
+                self.my_badge_flow = badge_flow
+                bf = "、".join(f"{t}号" for t in badge_flow)
+                text = (f"我是预言家，昨晚验的 {fake_target}号 是查杀，今天必须走掉他。"
+                        f"警徽流{bf}，都查杀外置位飞警徽，都金水撕警徽，一好一狼飞好人。")
                 suspect = fake_target
             else:
                 claim = "VILLAGER"
-                text = f"我是个普通村民。听下来 {suspect}号 的发言最有问题，我站边票他。"
+                text, suspect, wolf_trusts = self._wolf_position_speech(view, suspect)
+                if wolf_trusts:
+                    trust = wolf_trusts[0]
         elif view.role is Role.WITCH and rk["potion_log"] and ps["day"] >= 2:
             claim = "WITCH"
             claim_detail = "；".join(
@@ -442,6 +598,7 @@ class HeuristicAgent:
                 "claim": "WEREWOLF",
                 "claim_detail": "自爆",
                 "claimed_check": None,
+                "badge_flow": [],
                 "suspects": [],
                 "trusts": [],
                 "explode": True,
@@ -452,6 +609,7 @@ class HeuristicAgent:
             "claim": claim,
             "claim_detail": claim_detail,
             "claimed_check": claimed_check,
+            "badge_flow": badge_flow,
             "suspects": [suspect] if suspect else [],
             "trusts": [trust] if trust and trust != suspect else [],
             "explode": False,

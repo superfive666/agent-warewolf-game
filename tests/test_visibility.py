@@ -85,10 +85,13 @@ class TestVisibility(unittest.TestCase):
                 #   2. public_claims / public_check_claims —— 谁自称什么本来就是公开信息
                 #   3. 事件 payload 里的 claim —— 同上
                 #   4. rules_digest —— 板子构成（几狼几神几民）是全场公开的规则信息
+                #   5. speech_archive 里的 claim —— 发言档案记的是"谁自称什么"，同样是公开的
                 d.pop("legal_actions", None)
                 d["public_state"].pop("public_claims", None)
                 d["public_state"].pop("public_check_claims", None)
                 d["public_state"].pop("rules_digest", None)
+                for e in d["public_state"].get("speech_archive", []):
+                    e.pop("claim", None)
                 if d["wolf_team"]:
                     d["wolf_team"]["intel"].pop("claimed_roles", None)
                 for e in d["timeline"] + d["delta"]:

@@ -86,6 +86,11 @@ def _wolf_intel(state: GameState) -> dict:
         s for s, c in claimed.items() if s in wolves and c in god_claims
     )
 
+    # 来源：公开报出的警徽流 —— 狼队需要知道真预言家宣称接下来要验谁
+    badge_flows = [dict(b) for b in state.public_badge_flows]
+    our_badge_flows = [b for b in badge_flows if b["by"] in wolves]
+    enemy_badge_flows = [b for b in badge_flows if b["by"] not in wolves]
+
     # 来源：公开发言里宣称的验人结果（同一条被重复公布只记一次）
     checks_on_us = []
     for c in state.public_check_claims:
@@ -137,6 +142,8 @@ def _wolf_intel(state: GameState) -> dict:
         "our_claimed_gods": our_claimed_gods,
         "golden_waters": {str(k): v for k, v in sorted(golden_waters.items())},
         "checks_on_us": checks_on_us,
+        "our_badge_flows": our_badge_flows,
+        "enemy_badge_flows": enemy_badge_flows,
         "witch_antidote_used": antidote_used,
         "witch_poison_used": poison_used,
         "alive_wolf_count": len(alive_wolves),
@@ -259,6 +266,28 @@ def _rules_digest(state: GameState) -> dict:
     }
 
 
+def _speech_archive(state: GameState, full_days: int = 2) -> list[dict]:
+    """全部公开发言的档案。
+
+    真人玩家靠"你第一天说过 X、第二天说过 Y"来抓矛盾，agent 必须拿得到发言原文。
+    近 ``full_days`` 天给原文，更早的天数压成一行摘要（谁跳了什么、怀疑谁、信任谁）——
+    抓跨天矛盾靠的是立场变化，这一行就够，而且能把上下文控制住。
+    """
+    out = []
+    for sp in state.speech_log:
+        recent = sp["day"] > state.day - full_days
+        entry = {
+            "day": sp["day"], "seat": sp["seat"], "kind": sp["kind"],
+            "claim": sp["claim"], "claimed_check": sp["claimed_check"],
+            "badge_flow": sp["badge_flow"],
+            "suspects": sp["suspects"], "trusts": sp["trusts"],
+            "full": recent,
+        }
+        entry["text"] = sp["text"] if recent else (sp["text"][:40] + "…" if len(sp["text"]) > 40 else sp["text"])
+        out.append(entry)
+    return out
+
+
 def _public_state(state: GameState) -> dict:
     pub = public_players(state)
     return {
@@ -273,6 +302,8 @@ def _public_state(state: GameState) -> dict:
         "death_record": [dict(d) for d in state.death_record],
         "public_claims": {str(k): dict(v) for k, v in sorted(state.public_claims.items())},
         "public_check_claims": [dict(c) for c in state.public_check_claims],
+        "public_badge_flows": [dict(b) for b in state.public_badge_flows],
+        "speech_archive": _speech_archive(state),
         "revealed_roles": {
             str(s): pub[s].revealed_role for s in state.seats if pub[s].revealed_role
         },

@@ -50,44 +50,92 @@ def rules_digest(view: PlayerView) -> str:
     )
     return "\n".join(lines)
 
+#: 各角色的发言结构。取自真人牌桌上通行的发言套路，而不是泛泛的"要动脑子"。
 ROLE_STRATEGY = {
     Role.WEREWOLF: """\
-你是狼人。你的任务是活下来并把好人推出去。常用打法：
-  · 悍跳：冒充预言家给好人发查杀，骗警徽、骗信任
-  · 倒钩：假装相信真预言家，混进好人阵营
-  · 抗推：牺牲一名队友换取其他队友的信任
+你是狼人。白天你要扮成好人，所以**你的发言必须长得像一个好人的发言**。
+
+狼队的四种白天定位（第一夜在狼人频道里分工，一队通常只出一个悍跳）：
+  · 悍跳：冒充预言家，给一个好人发查杀，跟真预言家对跳抢警徽。
+    你必须把预言家那套发言结构完整模仿出来——报查验、留警徽流、讲验人心路历程。
+    只报查杀不留警徽流，是最容易被好人识破的破绽。
+  · 冲锋：扮平民，但强势站边自家悍跳、打真预言家、帮着归票。
+    风险是太急会暴露，所以要给出"我为什么信他"的具体理由，不能只喊口号。
+  · 倒钩：扮平民，反过来站边【真】预言家，骗到好人信任，后期再反水。
+    倒钩最怕被自家队友误伤，所以夜里要让队友知道你在倒钩。
+  · 深水：扮平民，少说少错，把发言权和火力让给队友，保存到后期。
+
+其他要点：
   · 屠边：优先杀神（预言家、女巫、猎人）而不是平民，神死光就赢
-  · 自爆：局势极差时（比如你被真预言家查杀、全场都在归票你）可以自爆，
-    用你这条命换掉好人一整个白天的发言和投票，给队友争取一个晚上。
-    自爆是很贵的手段，队友还活着、且这个白天对好人特别有利时才值得。
-你只知道狼队友是谁，其余人对你也是黑的 —— 你并不知道谁是预言家。
-夜里在狼人频道说的话好人永远看不到，白天要注意不要说漏嘴。""",
+  · 自爆：局势极差时用你这条命换掉好人一整个白天。队友还活着才值得
+  · 你只知道狼队友是谁，其余人对你也是黑的——你并不知道谁是预言家
+  · 夜里在狼人频道说的话好人永远看不到，白天要注意不要说漏嘴""",
+
     Role.SEER: """\
-你是预言家，是好人阵营最重要的信息源。常见打法：
-  · 首日起跳报验人结果，争取警徽
-  · 报"警徽流"（提前公布接下来几晚要验谁），这样你死了好人也知道该信谁
-  · 你会被狼人悍跳对跳，要用发言逻辑说服好人相信你
-  · 你大概率活不过第二晚，所以信息要尽早交出去""",
+你是预言家，好人阵营唯一的硬信息源，而且你大概率活不过第二晚。
+所以**你的任务不是活着，是在死之前把信息和指挥权交出去**。
+
+真人预言家的警上发言是固定的三部曲，你要照着打：
+  1. **报查验**：我是场上唯一的预言家，X 号是我的查杀 / 金水。
+  2. **留警徽流**：今明晚连验 A 和 B。
+     AB 都是狼 → 警徽飞外置位；AB 都是好人 → 撕掉警徽；一好一狼 → 警徽飞好人。
+     这一步最关键——你死了以后，好人靠警徽流才知道该信谁、警徽该给谁。
+     不留警徽流的"预言家"在真人局里会被直接当成狼。
+  3. **聊心路历程**：我昨晚为什么验 X，警徽流为什么选 A 和 B。
+     给出理由才有说服力，光报结果跟悍跳狼没有区别。
+
+其他要点：
+  · 你几乎必须上警——只有拿到警徽，警徽流、归票权、1.5 票和发言顺序才生效
+  · 会有狼人跟你对跳，好人要在你们两个里二选一。
+    赢下这个对跳靠的是逻辑细节和警徽流质量，不是嗓门
+  · 后续每晚的验人**尽量兑现你报出去的警徽流**，说到做到本身就是身份证明""",
+
     Role.WITCH: """\
-你是女巫。一瓶解药一瓶毒药，整局各一次。常见打法：
+你是女巫。你知道每晚谁被刀，这是场上第二硬的信息。
+
   · 首夜通常用解药（"首夜必救"），之后解药很难再用上
   · 毒药宁可不用也别毒错好人；最稳的是毒真预言家报出来的查杀
-  · 你知道每晚谁被刀，这是除预言家外最硬的信息，但一旦公开你就会被狼人重点照顾""",
+  · **你跳身份的时候，第一件事是给好人复盘夜间的刀口**：
+    哪天谁倒了、我救了谁、我毒了谁。这些信息只有真女巫拿得到，是你的身份证明
+  · 但一旦公开，你就会被狼人重点照顾，所以要挑值得的时机跳""",
+
     Role.HUNTER: """\
-你是猎人。你的枪是好人最后的威慑。常见打法：
-  · 平时藏身份，被票出局或被刀时开枪带走最像狼的人
+你是猎人。你的枪是好人最后的威慑。
+
+  · 平时**按平民的方式发言**，低调藏身份，不要主动跳
+  · 一旦起跳就要强势带队——你带着枪，狼人不敢轻易推你
   · 被女巫毒死时开不了枪，所以要留意女巫的用药
-  · 适时跳猎人可以吓退狼人的刀""",
+  · 什么时候跳：好人要被推错人、或者你觉得自己马上会被刀的时候""",
+
     Role.IDIOT: """\
-你是白痴。被票出局时会翻牌不死，但从此没有投票权。常见打法：
+你是白痴。被票出局时会翻牌不死，但从此没有投票权。
+
   · 你其实是一张"消耗好人一次投票"的牌，翻牌后可以继续用发言帮好人
-  · 翻牌后你不再有票，狼人也没必要刀你，所以你可以放开了说""",
+  · 翻牌后你不再有票，狼人也没必要刀你，所以那之后你可以放开了说
+  · 翻牌前按平民打，不要暴露""",
+
     Role.VILLAGER: """\
-你是平民。你没有任何技能，只能靠听发言、看票型找狼。常见打法：
-  · 认真分析谁在悍跳、谁在划水、谁的票投得反常
-  · 投票时跟着你相信的预言家走
-  · 不要随便跳神职，那会浪费狼人的一刀（也可能帮到好人，自行判断）""",
+你是平民。你没有技能，你的价值全在发言质量和投票上。
+
+真人平民的发言顺序是**先表水、再找狼**：
+  1. **表水**：先让别人相信你是好人——讲清楚你的判断依据、你听谁的、为什么。
+     在别人还怀疑你的时候急着指认别人，是最危险的操作。
+  2. **找狼**：表完水再站边和归票。
+
+其他要点：
+  · 认真盘前面每个人说过什么：谁在悍跳、谁在划水、谁的票投得反常、谁前后矛盾
+  · 投票跟着你相信的预言家走，别自己乱开车
+  · "我是好人，我怀疑 X 号"这种没有依据的发言在真人局里会被当成划水狼打""",
 }
+
+#: 发言位次的价值。真人局里后置位明显优于前置位，这是警长权力的全部意义。
+POSITION_NOTE = """\
+发言位次是有价值的：**后置位比前置位有利**。
+前面发言的人说完，后面的人可以针对性地反驳、补刀、归票，而前面的人已经没有机会再解释；
+而且发言一多，最早说的话很容易被大家忘掉。
+所以警长决定从哪边开始发言，本质上是在决定谁被架在火上烤。
+你如果在前置位，就要把话说得足够扎实、留下能被后面引用的判断；
+你如果在后置位，就要真的去盘前面每一个人说了什么，而不是重复一遍你的立场。"""
 
 OUTPUT_RULE = """\
 你必须只输出一个 JSON 对象，不要输出任何解释性文字、不要用 markdown 代码块包裹。
@@ -116,7 +164,8 @@ def system_prompt(view: PlayerView) -> str:
             f"你的狼队友是：{'、'.join(f'{m}号' for m in mates)}。"
             "你们在夜里有一个好人完全看不到的狼人频道。"
         )
-    parts += ["", "════════ 打法提示 ════════", ROLE_STRATEGY[view.role], "",
+    parts += ["", "════════ 打法提示 ════════", ROLE_STRATEGY[view.role],
+              "", POSITION_NOTE, "",
               "════════ 输出要求 ════════", OUTPUT_RULE]
     return "\n".join(parts)
 
@@ -152,10 +201,47 @@ def _fmt_public_state(view: PlayerView) -> str:
         ))
     if ps["revealed_roles"]:
         lines.append("已翻牌的身份：" + "　".join(f"{s}号={Role(r).cn}" for s, r in ps["revealed_roles"].items()))
-    for v in ps["vote_history"][-2:]:
+    if ps["public_badge_flows"]:
+        lines.append("公开报出的警徽流：" + "　".join(
+            "第{}天 {}号报「{}」".format(
+                b["day"], b["by"], "、".join(f"{t}号" for t in b["targets"]))
+            for b in ps["public_badge_flows"]
+        ))
+    # 票型全给，不截断 —— 票型是抓狼最硬的证据之一
+    for v in ps["vote_history"]:
         kind = "警长票" if v["type"] == "sheriff" else "放逐票"
         desc = "、".join(f"{k}→{t}号" if t else f"{k}弃票" for k, t in v["votes"].items())
         lines.append(f"第{v['day']}天{kind}(第{v['round']}轮)：{desc}　出局={v['result'] or '平票'}")
+    return "\n".join(lines)
+
+
+def _fmt_speech_archive(view: PlayerView) -> str:
+    """全场发言档案。这是 agent 能"盘逻辑"的前提 —— 没有原文就只能靠标签推理。"""
+    arch = view.public_state["speech_archive"]
+    if not arch:
+        return ""
+    lines = ["════════ 全场发言档案（这是你盘逻辑的原始材料）════════",
+             "近两天给发言原文，更早的压成一行立场摘要。注意找前后矛盾、注意谁在划水。"]
+    day = None
+    for e in arch:
+        if e["day"] != day:
+            day = e["day"]
+            lines.append(f"\n── 第 {day} 天 ──")
+        tags = []
+        if e["claim"]:
+            tags.append(f"跳{Role(e['claim']).cn}")
+        if e["claimed_check"]:
+            c = e["claimed_check"]
+            tags.append(f"报{c['target']}号={'查杀' if c['result'] == 'WOLF' else '金水'}")
+        if e["badge_flow"]:
+            tags.append("警徽流" + "".join(f"{t}号" for t in e["badge_flow"]))
+        if e["suspects"]:
+            tags.append("怀疑" + "".join(f"{t}号" for t in e["suspects"]))
+        if e["trusts"]:
+            tags.append("信任" + "".join(f"{t}号" for t in e["trusts"]))
+        tag = ("［" + "／".join(tags) + "］") if tags else ""
+        me = "（你自己）" if e["seat"] == view.seat else ""
+        lines.append(f"  {e['seat']}号{me}{tag}：{e['text']}")
     return "\n".join(lines)
 
 
@@ -206,6 +292,16 @@ def _fmt_wolf_team(view: PlayerView) -> str:
         f"情报：起跳预言家={intel['claimed_seers']}　我方悍跳={intel['our_claimed_gods']}　"
         f"我方被查杀={[c['target'] for c in intel['checks_on_us']]}"
     )
+    if intel["enemy_badge_flows"]:
+        lines.append("　　　对方报的警徽流（他接下来要验谁，这决定我们今晚刀谁）：" + "　".join(
+            "{}号→{}".format(b["by"], "、".join(f"{t}号" for t in b["targets"]))
+            for b in intel["enemy_badge_flows"]
+        ))
+    if intel["our_badge_flows"]:
+        lines.append("　　　我方报的假警徽流（必须记住，明天要圆回来）：" + "　".join(
+            "{}号→{}".format(b["by"], "、".join(f"{t}号" for t in b["targets"]))
+            for b in intel["our_badge_flows"]
+        ))
     used_cn = {True: "已用", False: "未用", None: "未知"}
     lines.append(
         "　　　女巫解药={}　女巫毒药={}　疑似神职={}".format(
@@ -215,6 +311,12 @@ def _fmt_wolf_team(view: PlayerView) -> str:
         )
     )
     lines.append(f"　　　{intel['edge_hint']}")
+    assign = wt.strategy_board.get("assignments") or {}
+    if assign:
+        from .actions import WOLF_POSITIONS
+        lines.append("狼队白天分工：" + "　".join(
+            "{}号={}".format(k, WOLF_POSITIONS[v].split(" ")[0]) for k, v in sorted(assign.items())
+        ))
     if wt.strategy_board.get("notes"):
         lines.append(f"狼队战术板：{wt.strategy_board['notes']}")
     recent = [c for c in wt.chat_log if c["day"] >= view.public_state["day"]]
@@ -250,6 +352,10 @@ def turn_prompt(view: PlayerView, *, full: bool = False, error: str | None = Non
     """一次决策请求。full=True 时发完整 timeline（首次调用），否则只发增量。"""
     blocks = ["════════ 场上局势 ════════", _fmt_public_state(view),
               "", "════════ 你的私有信息 ════════", _fmt_role_knowledge(view)]
+    # 发言档案每回合都重发（不依赖对话历史），否则早期发言会随历史裁剪永久丢失
+    archive = _fmt_speech_archive(view)
+    if archive:
+        blocks += ["", archive]
     wolf = _fmt_wolf_team(view)
     if wolf:
         blocks += ["", wolf]
@@ -286,12 +392,18 @@ _SPEECH_PROPS = {
         "required": ["target", "result"],
         "additionalProperties": False,
     },
+    "badge_flow": {"type": "array", "items": {"type": "integer"}},
     "suspects": {"type": "array", "items": {"type": "integer"}},
     "trusts": {"type": "array", "items": {"type": "integer"}},
 }
 
 _SCHEMAS: dict[str, dict] = {
-    "wolf_chat": {"speech": _STR, "kill_suggestion": _INT_OR_NULL, "strategy_note": _STR},
+    "wolf_chat": {
+        "speech": _STR, "kill_suggestion": _INT_OR_NULL, "strategy_note": _STR,
+        "my_position": {"type": ["string", "null"],
+                        "enum": ["HARD_CLAIM", "CHARGE", "BACKHOOK", "DEEP", None]},
+        "position_plan": {"type": "object", "additionalProperties": {"type": "string"}},
+    },
     "wolf_kill": {"target": _INT_OR_NULL},
     "witch_action": {"heal": {"type": "boolean"}, "poison": _INT_OR_NULL},
     "seer_check": {"target": {"type": "integer"}},

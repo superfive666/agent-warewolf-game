@@ -160,6 +160,21 @@ class Engine:
                 {"day": st.day, "by": seat, "target": c["target"], "result": c["result"]}
             )
             text += f"　【宣称验人：{c['target']}号 = {'查杀' if c['result'] == 'WOLF' else '金水'}】"
+        if act.get("badge_flow"):
+            st.public_badge_flows.append(
+                {"day": st.day, "by": seat, "targets": list(act["badge_flow"])}
+            )
+            text += "　【警徽流：" + "、".join(f"{t}号" for t in act["badge_flow"]) + "】"
+        # 发言原文进档案，供所有人日后"盘逻辑"
+        st.speech_log.append({
+            "day": st.day, "phase": st.phase, "kind": kind, "seat": seat,
+            "text": act["speech"], "claim": act.get("claim"),
+            "claim_detail": act.get("claim_detail", ""),
+            "claimed_check": act.get("claimed_check"),
+            "badge_flow": list(act.get("badge_flow") or []),
+            "suspects": list(act.get("suspects") or []),
+            "trusts": list(act.get("trusts") or []),
+        })
         self.emit(
             type=kind, audience=Audience.PUBLIC, actor=seat, text=text,
             payload={k: v for k, v in act.items() if k != "speech"},
@@ -169,8 +184,13 @@ class Engine:
         """狼人自爆：亮身份、立刻出局、白天当场结束。没有遗言，警徽销毁。"""
         st = self.state
         p = st.players[seat]
-        # 自爆前说的那句话仍然进公开记录
+        # 自爆前说的那句话仍然进公开记录，也要进发言档案 —— 那是他最后一次公开表态
         if act.get("speech") and act["speech"] != "（该玩家没有发言）":
+            st.speech_log.append({
+                "day": st.day, "phase": st.phase, "kind": "speech", "seat": seat,
+                "text": act["speech"], "claim": None, "claim_detail": "",
+                "claimed_check": None, "badge_flow": [], "suspects": [], "trusts": [],
+            })
             self.emit(type="speech", audience=Audience.PUBLIC, actor=seat,
                       text=f"{p.name}：{act['speech']}")
         p.exploded = True
@@ -286,12 +306,21 @@ class Engine:
                 )
                 if act.get("strategy_note"):
                     st.wolf_strategy_board["notes"] = act["strategy_note"]
+                # 狼队分工：自己认领的写死，给队友的建议只在队友还没认领时生效
+                assign = st.wolf_strategy_board.setdefault("assignments", {})
+                for mate, pos in (act.get("position_plan") or {}).items():
+                    assign.setdefault(str(mate), pos)
+                if act.get("my_position"):
+                    assign[str(seat)] = act["my_position"]
                 sug = act["kill_suggestion"]
                 self.emit(
                     type="wolf_chat", audience=Audience.WOLVES, actor=seat,
                     text=f"[狼人频道] {st.players[seat].name}：{act['speech']}"
-                         + (f"（建议刀 {sug}号）" if sug else ""),
-                    payload={"kill_suggestion": sug},
+                         + (f"（建议刀 {sug}号）" if sug else "")
+                         + (f"（我打{A.WOLF_POSITIONS[act['my_position']].split(' ')[0]}）"
+                            if act.get("my_position") else ""),
+                    payload={"kill_suggestion": sug, "my_position": act.get("my_position"),
+                             "position_plan": act.get("position_plan")},
                 )
 
         # --- 击杀投票 ---

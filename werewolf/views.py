@@ -204,6 +204,29 @@ class PlayerView:
     def is_wolf(self) -> bool:
         return self.role is Role.WEREWOLF
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "PlayerView":
+        """从 as_dict() 的结果还原。
+
+        容器化部署时，编排端把视角序列化发给 agent 容器，
+        容器里用这个还原出 PlayerView，再自己组装 prompt、自己调模型。
+        """
+        wt = d.get("wolf_team")
+        return cls(
+            identity=d["identity"],
+            public_state=d["public_state"],
+            timeline=d.get("timeline") or [],
+            delta=d.get("delta") or [],
+            wolf_team=WolfTeamView(
+                generated_at_seq=wt["generated_at_seq"], roster=wt["roster"],
+                alive_wolves=wt["alive_wolves"], dead_wolves=wt["dead_wolves"],
+                chat_log=wt["chat_log"], kill_history=wt["kill_history"],
+                intel=wt["intel"], strategy_board=wt["strategy_board"],
+            ) if wt else None,
+            legal_actions=d.get("legal_actions"),
+            generated_at_seq=d.get("generated_at_seq", 0),
+        )
+
     def as_dict(self) -> dict:
         return {
             "view_type": "player",

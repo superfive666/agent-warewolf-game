@@ -57,6 +57,10 @@
         <label>胜负规则
           <select id="win-rule"><option value="edge">屠边</option><option value="city">屠城</option></select>
         </label>
+        <label>部署模式
+          <select id="deployment"></select>
+          <span class="hint" id="deployment-hint"></span>
+        </label>
         <label class="check"><input id="sheriff" type="checkbox" checked> 警长竞选（警徽流）</label>
         <label class="check"><input id="explode" type="checkbox" checked> 允许狼人自爆</label>
       </div>
@@ -92,10 +96,12 @@
     <div class="tabs">
       <button class="tab active" data-tab="tab-replay">战报</button>
       <button class="tab" data-tab="tab-thoughts">心路历程</button>
+      <button class="tab" data-tab="tab-sessions">会话存档</button>
       <button class="tab" data-tab="tab-raw">原始数据</button>
     </div>
     <div id="tab-replay" class="tabpane"></div>
     <div id="tab-thoughts" class="tabpane hidden"></div>
+    <div id="tab-sessions" class="tabpane hidden"></div>
     <div id="tab-raw" class="tabpane hidden">
       <p class="hint">下面是这局的 13 份上下文（12 份个人视角 + 1 份狼队视角）和完整结果。</p>
       <div class="inline">

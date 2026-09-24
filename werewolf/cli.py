@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from .engine import Engine
 from .lineup import Lineup
+from .runtime import DEPLOYMENTS
+from .session import GameSession
 from .events import Audience
 from .replay import render_replay, result_summary
 from .roles import BOARDS, Faction, Role
@@ -61,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-save", action="store_true", help="不写任何文件")
     p.add_argument("--dump-views", action="store_true",
                    help="在每个决策点都快照一份视角（用于逐帧检查信息隔离）")
+    p.add_argument("--deployment", default="inprocess", choices=sorted(DEPLOYMENTS),
+                   help="agent 跑在哪：" + "；".join(f"{k}={v}" for k, v in DEPLOYMENTS.items()))
+    p.add_argument("--store", default=None,
+                   help="会话存储 URI，如 sqlite:runs/werewolf.db / files:runs / none:"
+                        "（默认 sqlite，环境变量 WEREWOLF_STORE 可覆盖）")
+    p.add_argument("--image", default=None,
+                   help="agent 容器镜像（docker / k8s 部署时用）")
     return p
 
 
@@ -74,8 +83,6 @@ def run_one(args, seed: int | None, quiet: bool) -> tuple:
         max_speech_chars=args.max_speech_chars,
         max_iterations=args.max_iterations,
     )
-    state = new_game(config)
-
     llm_seats = _parse_seats(args.llm_seats)
     seats_payload = [
         {
@@ -85,10 +92,18 @@ def run_one(args, seed: int | None, quiet: bool) -> tuple:
             "model": args.model,
             "effort": args.effort,
         }
-        for s in state.seats
+        for s in range(1, args.n_players + 1)
     ]
     lineup = Lineup.from_payload(args.n_players, seats_payload)
-    agents = lineup.build_agents(state, verbose=args.show_thoughts)
+
+    session = GameSession(
+        config, lineup,
+        deployment=args.deployment,
+        store_uri=args.store or os.environ.get("WEREWOLF_STORE", "sqlite:runs/werewolf.db"),
+        image=args.image or os.environ.get("WEREWOLF_AGENT_IMAGE", "werewolf-agent:latest"),
+        verbose=args.show_thoughts,
+    )
+    state = session.state
 
     def on_event(e):
         if quiet:
@@ -108,12 +123,11 @@ def run_one(args, seed: int | None, quiet: bool) -> tuple:
                 {"turn": turn, "seat": seat, "action_type": action_type, "view": view.as_dict()}
             )
 
-    engine = Engine(state, agents, on_event=on_event, view_recorder=recorder)
-    state = engine.run()
-    return state, agents, view_snapshots, lineup
+    state = session.run(on_event=on_event, view_recorder=recorder)
+    return state, session, view_snapshots, lineup
 
 
-def save_run(outdir: Path, state, agents, args, view_snapshots, lineup=None) -> None:
+def save_run(outdir: Path, state, session, args, view_snapshots, lineup=None) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     (outdir / "config.json").write_text(
         json.dumps({**state.config.as_dict(),
@@ -126,6 +140,11 @@ def save_run(outdir: Path, state, agents, args, view_snapshots, lineup=None) -> 
     (outdir / "thoughts.json").write_text(
         json.dumps([t for t in state.thought_log if t["thought"]],
                    ensure_ascii=False, indent=2), encoding="utf-8")
+    # 每个座位的 agent 会话（容器销毁前抓下来的那份）
+    sessions = session.store.load_agent_sessions(session.id)
+    if sessions:
+        (outdir / "agent_sessions.json").write_text(
+            json.dumps(sessions, ensure_ascii=False, indent=2), encoding="utf-8")
 
     views = build_all_views(state)
     vdir = outdir / "views"
@@ -161,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  平均天数：{sum(days) / len(days):.2f}")
         return 0
 
-    state, agents, snaps, lineup = run_one(args, args.seed, quiet=args.quiet)
+    state, session, snaps, lineup = run_one(args, args.seed, quiet=args.quiet)
 
     if not args.quiet:
         print("\n" + "=" * 60)
@@ -170,11 +189,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_save:
         outdir = Path(args.out) if args.out else Path("runs") / datetime.now().strftime("%Y%m%d-%H%M%S")
-        save_run(outdir, state, agents, args, snaps, lineup)
-        print(f"\n产物已写入：{outdir}/")
+        save_run(outdir, state, session, args, snaps, lineup)
+        print(f"\n会话已入库：{args.store or os.environ.get('WEREWOLF_STORE', 'sqlite:runs/werewolf.db')}"
+              f"　game_id={session.id}")
+        print(f"产物已写入：{outdir}/")
         print(f"  replay.md          文字战报（含上帝视角）")
         print(f"  events.jsonl       全部事件")
         print(f"  thoughts.json      每个 agent 的心路历程")
+        print(f"  agent_sessions.json 每个座位的完整会话（容器销毁前抓下来的）")
         print(f"  views/seat_*.json + wolf_team.json   {args.n_players + 1} 份上下文")
     return 0
 

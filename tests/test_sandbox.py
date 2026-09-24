@@ -227,6 +227,8 @@ class TestServer(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.httpd.shutdown()
+        cls.httpd.server_close()   # 不关的话监听 socket 会一直留着
+        cls.t.join(timeout=5)
 
     def _get(self, path):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=30) as r:

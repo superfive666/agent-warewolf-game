@@ -9,6 +9,9 @@ python3 run_server.py      # 打开 http://127.0.0.1:8000
 
 零依赖即可运行（内置规则 bot）；想让真正的 Claude 来打，再装 `anthropic` 并配 API key。
 
+支持四种部署：同进程 / 每座位一个进程 / 每座位一个 Docker 容器 / 每座位一个 k8s Pod。
+**玩家离场（被刀、被票、自爆）立刻销毁容器，但会话在销毁之前就已入库，永远留得住。**
+
 ---
 
 ## 它能做什么
@@ -20,7 +23,9 @@ python3 run_server.py      # 打开 http://127.0.0.1:8000
 - **像真人一样发言**：每次发言有字数上限（默认 450 字 ≈ 真人讲 2 分钟），超长会被打回重说
 - **思考不设限、迭代有上限**：agent 想多久想多长都行，但每个决策点最多问它 3 次
 - **开局后全自动**：点一次开始，整局跑到分出胜负
-- **详细复盘**：战报 + 每个 agent 在每个决策点的内心想法 + N+1 份上下文可下载
+- **详细复盘**：战报 + 每个 agent 在每个决策点的内心想法 + 完整会话存档 + N+1 份上下文可下载
+- **四种部署**：同进程 / 进程 / Docker 容器 / k8s Pod，换一个参数就切
+- **会话永久保留**：边跑边写进 SQLite，容器销毁前先抓会话；agent 的私有笔记挂在比容器活得久的卷上
 
 ---
 
@@ -75,6 +80,7 @@ python3 -m unittest discover -s tests -t .
 | [`docs/02-游戏流程.md`](docs/02-游戏流程.md) | 完整状态机、每个阶段的 Action schema、自爆如何打断白天、迭代上限与心路历程 |
 | [`docs/03-技术设计.md`](docs/03-技术设计.md) | 事件日志与信息隔离、视角生成、agent 接口、沙箱 HTTP 服务 |
 | [`docs/04-视角与上下文.md`](docs/04-视角与上下文.md) | **N 份个人视角 + 1 份狼队视角的完整 JSON 规范** |
+| [`docs/05-部署与会话存储.md`](docs/05-部署与会话存储.md) | 四种部署模式、agent 容器契约、私有 memory 卷、会话存储（DB vs 文件）、座位生命周期 |
 
 ---
 
@@ -134,12 +140,18 @@ def visible_to_seat(event, seat, is_wolf):
 7. 预言家的验人结果只出现在预言家自己的视角里
 8. 女巫的刀口告知只出现在女巫自己的视角里
 
-外加 `tests/test_sandbox.py` 验证心路历程只活在 GOD 层、自爆规则、字数上限、迭代上限，
-以及起一个真的 HTTP 服务跑完一局、检查每个前端要用的接口。
+外加：
+- `tests/test_sandbox.py` —— 心路历程只活在 GOD 层、自爆规则、字数上限、迭代上限，
+  以及起一个真的 HTTP 服务跑完一局、检查每个前端要用的接口
+- `tests/test_script_quality.py` —— 警徽流必报/不改口/兑现、悍跳狼不得改口、
+  一队至多一个悍跳、第一天发言必须出现在后期 prompt 里
+- `tests/test_deployment.py` —— 两种存储后端行为一致、视角序列化无损、
+  **会话必须先于销毁被保存**、每个座位恰好释放一次且原因正确、
+  遗言/开枪/移交警徽之前不得释放、跨进程跑完整局且不泄漏进程
 
 ```
 $ python3 -m unittest discover -s tests -t .
-Ran 61 tests in 13.3s
+Ran 97 tests in 40s
 OK
 ```
 
@@ -165,6 +177,40 @@ LLM 后端的上下文组装：
 规则 bot 之间的对局，100 局统计好人胜率约 **38%**（开自爆），双方都能赢，不存在单边碾压。
 
 ---
+
+## 部署与会话存储
+
+`agent 跑在哪` 和 `会话存在哪` 耦合在一条约束上：
+**玩家离场就销毁容器，但会话必须保留下来复盘。**
+
+| 部署模式 | 一个座位 = | 隔离 |
+|---|---|---|
+| `inprocess` | 一个 Python 对象 | 无，最快 |
+| `subprocess` | 一个 OS 进程 | 进程 + 独立 memory 目录 |
+| `docker` | 一个容器 | 容器 + cgroup 限额 + 独立卷 |
+| `k8s` | 一个 Pod | Pod + 资源限额 + 独立 PVC |
+
+后三种走**完全相同的 HTTP 契约**，所以 CI 用 `subprocess` 就能验证容器路径的
+全部逻辑（起 → 就绪 → act → 抓会话 → 销毁），不需要真的有集群。
+
+容器里跑的是一个只认识自己座位的 agent：它拿不到 `GameState`，编排端把
+`PlayerView` 序列化发过去，它在自己那边重建视角、读自己的私人笔记本、调自己的模型。
+
+**会话存哪**：两个都要，按数据形状分 ——
+
+- **SQLite（默认）** 存事件流、每一轮的动作和心路历程、agent 的对话历史。
+  要跨局查询、要事务性追加；k8s 下 N 个 Pod 连一个 DB endpoint 比挂 RWX 共享卷简单。
+  换 Postgres 只要照着 `SessionStore` 协议再写一个实现。
+- **持久卷** 存 agent 自己写的 memory 文件。**卷活得比容器长**，
+  k8s 的 RBAC 里故意没给编排端删 PVC 的权限。
+
+两条硬规则：**边跑边写**（不是跑完一次性 flush，否则崩了就什么都不剩）、
+**销毁前先抓会话**（顺序反了就永远拿不回来，有专门的测试盯着这个调用顺序）。
+
+死了不等于能立刻拆 —— 被票出的还要留遗言、猎人还要开枪、警长还要移交警徽，
+全部走完才释放。白痴翻牌不释放，因为他还活着还能发言。
+
+详见 [`docs/05-部署与会话存储.md`](docs/05-部署与会话存储.md)。
 
 ## 复盘里有什么
 
@@ -201,6 +247,9 @@ runs/<时间戳>/
 run_server.py         Web 沙箱入口
 run_game.py           命令行入口
 web/                  前端（零构建：index.html + app.css + app.js）
+deploy/
+├── docker/           Dockerfile + compose 生成器
+└── k8s/              Namespace / RBAC / 编排端 Deployment
 werewolf/
 ├── roles.py          角色 / 阵营 / 5 种板子
 ├── events.py         ★ 事件 + 可见性模型（信息隔离的全部实现）
@@ -213,13 +262,19 @@ werewolf/
 ├── server.py         沙箱 HTTP 服务（只用标准库）
 ├── replay.py         复盘渲染
 ├── cli.py            命令行
+├── session.py        一局对局的装配：存储 + 座位运行时 + 引擎
+├── agent_server.py   跑在【单个 agent 容器】里的服务
+├── store/            会话存储（SQLite / 文件 / 自己实现）
+├── runtime/          座位运行时（同进程 / 进程 / Docker / k8s）
 └── agents/
     ├── base.py       Agent 接口（只有 act(view) 一个方法）
     ├── heuristic.py  规则 bot
-    └── llm.py        Claude API 后端
+    └── llm.py        Claude API 后端（支持私有 memory 目录）
 ```
 
 ## 依赖
 
 - **规则 bot + 网页沙箱**：只需要 Python 3.11+，**零第三方依赖**（前端也没有构建步骤）
 - **LLM 后端**：`pip install -r requirements-llm.txt`，并设置 `ANTHROPIC_API_KEY`
+- **k8s 部署**：`pip install -r requirements-k8s.txt`（官方 kubernetes SDK）
+- **会话存储**：SQLite 走标准库 `sqlite3`，不需要装任何东西

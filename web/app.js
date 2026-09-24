@@ -34,6 +34,13 @@ async function init() {
 
   fillSelect($('#bulk-model'), Object.entries(OPTIONS.models).map(([k, v]) => [k, v.label]));
   fillSelect($('#bulk-effort'), OPTIONS.efforts.map((e) => [e, e]));
+  fillSelect($('#deployment'), Object.keys(OPTIONS.deployments).map((k) => [k, k]));
+  $('#deployment').value = OPTIONS.defaults.deployment || 'inprocess';
+  const syncDep = () => {
+    $('#deployment-hint').textContent = OPTIONS.deployments[$('#deployment').value] || '';
+  };
+  $('#deployment').onchange = syncDep;
+  syncDep();
   $('#bulk-effort').value = 'medium';
   $('#bulk-apply').onclick = applyBulk;
   $('#start').onclick = startGame;
@@ -150,6 +157,7 @@ async function startGame() {
     win_rule: $('#win-rule').value,
     max_speech_chars: Number($('#max-speech').value),
     max_iterations: Number($('#max-iter').value),
+    deployment: $('#deployment').value,
   };
   $('#start').disabled = true;
   $('#start').textContent = '开局中…';
@@ -279,6 +287,7 @@ async function loadReplay() {
   $('#tab-replay').innerHTML = '';
   $('#tab-replay').appendChild(el('pre', null, data.markdown));
   renderThoughts(data.thoughts, res);
+  renderSessions(data.sessions || [], res);
 
   const raw = await (await fetch(`/api/games/${gameId}/views`)).json();
   $('#raw-pre').textContent = JSON.stringify(res, null, 2);
@@ -292,6 +301,47 @@ async function loadReplay() {
 
 function link(sel, text, type) {
   $(sel).href = URL.createObjectURL(new Blob([text], { type }));
+}
+
+function renderSessions(sessions, res) {
+  const pane = $('#tab-sessions');
+  pane.innerHTML = '';
+  pane.appendChild(el('p', 'hint',
+    '每个座位的 agent 会话。玩家离场时容器/进程会被销毁，但会话在销毁之前就已经存进会话库，' +
+    '所以这里始终是完整的。'));
+  if (!sessions.length) {
+    pane.appendChild(el('p', 'hint', '（这一局没有会话记录）'));
+    return;
+  }
+  sessions.forEach((s) => {
+    const d = el('details', 'thought-seat');
+    const roleCn = res.roles_cn[String(s.seat)] || s.role || '';
+    const n = (s.messages || []).length;
+    d.appendChild(el('summary', null,
+      `${s.seat}号 · ${roleCn} · ${s.backend || ''}${s.model ? ' / ' + s.model : ''}` +
+      ` · ${n} 条消息 · 释放原因 ${s.release_reason || '—'}`));
+    const body = el('div', 'body');
+    if (s.memory_uri) body.appendChild(el('div', 'act', 'memory 卷：' + s.memory_uri));
+    if (s.notes) {
+      body.appendChild(el('div', 'when', '私人笔记本（只有它自己看得到）'));
+      body.appendChild(el('pre', null, s.notes));
+    }
+    if (s.system_prompt) {
+      const sp = el('details');
+      sp.appendChild(el('summary', null, 'system prompt（整局逐字不变）'));
+      sp.appendChild(el('pre', null, s.system_prompt));
+      body.appendChild(sp);
+    }
+    (s.messages || []).forEach((m, i) => {
+      const b = el('div', 'th');
+      b.appendChild(el('div', 'when', `#${i + 1} ${m.role}`));
+      b.appendChild(el('pre', null,
+        typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+      body.appendChild(b);
+    });
+    d.appendChild(body);
+    pane.appendChild(d);
+  });
 }
 
 function renderThoughts(thoughts, res) {

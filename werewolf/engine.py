@@ -29,9 +29,17 @@ class Engine:
         max_iterations: int | None = None,
         on_event=None,
         view_recorder=None,
+        store=None,
+        game_id: str = "",
+        pool=None,
     ) -> None:
         self.state = state
         self.agents = agents
+        #: 会话存储。边跑边写 —— 不能等整局跑完，否则崩了就什么都不剩
+        self.store = store
+        self.game_id = game_id
+        #: 座位运行时池。玩家离场时用它「先存会话、再销毁容器」
+        self.pool = pool
         #: 单个决策点最多向 agent 索要几次动作。思考长度不限，但迭代次数有上限。
         self.max_iterations = max_iterations or state.config.max_iterations
         self.on_event = on_event
@@ -46,6 +54,8 @@ class Engine:
             day=self.state.day, phase=self.state.phase, type=type,
             audience=audience, text=text, **kw,
         )
+        if self.store is not None and self.game_id:
+            self.store.append_event(self.game_id, e.as_dict())
         if self.on_event:
             self.on_event(e)
         return e
@@ -118,10 +128,9 @@ class Engine:
     def _record_thought(self, seat, action_type, attempt, thought, *, action, accepted, error):
         """记录心路历程。这是 GOD 级信息，复盘可见，任何玩家视角都看不到。"""
         st = self.state
-        if thought is None and accepted:
-            return
         entry = {
             "turn": self._turn,
+            "attempt_seq": len(st.event_log),
             "seq": len(st.event_log),
             "day": st.day,
             "phase": st.phase,
@@ -135,7 +144,10 @@ class Engine:
             "accepted": accepted,
             "error": error,
         }
-        st.thought_log.append(entry)
+        if thought or not accepted:
+            st.thought_log.append(entry)
+        if self.store is not None and self.game_id:
+            self.store.append_turn(self.game_id, entry)
         if thought:
             self.emit(
                 type="thought", audience=Audience.GOD, actor=seat,
@@ -250,8 +262,17 @@ class Engine:
             self.emit(type="badge", audience=Audience.PUBLIC, actor=seat, targets=[target],
                       text=f"{seat}号把警徽移交给了 {target}号。")
 
+    def _release(self, seat: int, reason: str) -> None:
+        """该座位再也不会被 ask() 到了 —— 先存会话，再销毁它的容器/Pod。"""
+        if self.pool is not None and seat in self.pool:
+            self.pool.release(seat, reason)
+
     def _after_death(self, seat: int, *, allow_last_words: bool, allow_hunter: bool) -> None:
-        """出局后的连锁处理：遗言 → 警徽 → 猎人开枪。"""
+        """出局后的连锁处理：遗言 → 警徽 → 猎人开枪。
+
+        全部处理完之后才释放运行时 —— 死了不等于能立刻拆：
+        被票出的还要留遗言、猎人还要开枪、警长还要移交警徽。
+        """
         st = self.state
         p = st.players[seat]
         if allow_last_words:
@@ -271,6 +292,8 @@ class Engine:
                           text=f"{seat}号开枪带走了 {target}号。")
                 self.kill(target, when="shot", cause="shot")
                 self._after_death(target, allow_last_words=False, allow_hunter=False)
+        # 到这里这名玩家的所有后续动作都处理完了，可以安全释放
+        self._release(seat, p.died_cause or "dead")
 
     # ====================== 夜晚 ======================
 
@@ -736,6 +759,12 @@ class Engine:
             text=f"游戏结束：{st.winner.cn if st.winner else '平局'}（{st.end_reason}）",
             payload={"winner": st.winner.value if st.winner else None, "reason": st.end_reason},
         )
+        if self.pool is not None:
+            self.pool.release_all("game_over")
+        if self.store is not None and self.game_id:
+            from .replay import result_summary
+
+            self.store.finish_game(self.game_id, {**result_summary(st), "status": "finished"})
         return st
 
     def _setup(self) -> None:

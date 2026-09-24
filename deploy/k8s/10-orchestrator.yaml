@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: werewolf-store
+  namespace: werewolf
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: werewolf-orchestrator
+  namespace: werewolf
+spec:
+  replicas: 1          # 会话库是 SQLite 单文件，多副本要先换成 Postgres
+  selector:
+    matchLabels: {app: werewolf-orchestrator}
+  template:
+    metadata:
+      labels: {app: werewolf-orchestrator}
+    spec:
+      serviceAccountName: werewolf-orchestrator
+      containers:
+        - name: orchestrator
+          image: werewolf-agent:latest
+          command: ["python3", "run_server.py", "--host", "0.0.0.0"]
+          ports: [{containerPort: 8000}]
+          env:
+            - name: WEREWOLF_DEPLOYMENT
+              value: "k8s"
+            - name: WEREWOLF_NAMESPACE
+              value: "werewolf"
+            - name: WEREWOLF_AGENT_IMAGE
+              value: "werewolf-agent:latest"
+            - name: WEREWOLF_STORE
+              value: "sqlite:/data/werewolf.db"
+            - name: WEREWOLF_AGENT_SECRET
+              value: "anthropic"
+          volumeMounts:
+            - {name: store, mountPath: /data}
+          resources:
+            requests: {cpu: "500m", memory: "512Mi"}
+            limits:   {cpu: "2",    memory: "2Gi"}
+      volumes:
+        - name: store
+          persistentVolumeClaim: {claimName: werewolf-store}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: werewolf
+  namespace: werewolf
+spec:
+  selector: {app: werewolf-orchestrator}
+  ports: [{port: 80, targetPort: 8000}]

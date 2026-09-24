@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import threading
 import traceback
 import uuid
@@ -14,14 +15,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .agents.llm import LLMAgent
-from .engine import Engine
 from .events import Audience
 from .lineup import AVAILABLE_BACKENDS, AVAILABLE_MODELS, EFFORT_LEVELS, Lineup
 from .replay import render_replay, result_summary
 from .roles import BOARDS, board_summary
-from .state import GameConfig, new_game
+from .runtime import DEPLOYMENTS
+from .session import GameSession
+from .state import GameConfig
+from .store import open_store
 from .views import build_all_views
+
+#: 全局会话存储。所有对局都往这里写，重启后还能复盘。
+STORE_URI = os.environ.get("WEREWOLF_STORE", "sqlite:runs/werewolf.db")
+DEFAULT_DEPLOYMENT = os.environ.get("WEREWOLF_DEPLOYMENT", "inprocess")
+AGENT_IMAGE = os.environ.get("WEREWOLF_AGENT_IMAGE", "werewolf-agent:latest")
+STORE = open_store(STORE_URI)
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -29,12 +37,17 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 class GameRunner:
     """一局游戏 = 一个后台线程。前端靠轮询拿增量事件。"""
 
-    def __init__(self, config: GameConfig, lineup: Lineup) -> None:
+    def __init__(self, config: GameConfig, lineup: Lineup,
+                 deployment: str = "inprocess") -> None:
         self.id = uuid.uuid4().hex[:12]
         self.config = config
         self.lineup = lineup
-        self.state = new_game(config)
-        self.agents = lineup.build_agents(self.state)
+        self.deployment = deployment
+        self.session = GameSession(
+            config, lineup, deployment=deployment, store=STORE,
+            game_id=self.id, image=AGENT_IMAGE,
+        )
+        self.state = self.session.state
         self.status = "pending"  # pending | running | finished | failed | stopped
         self.error: str | None = None
         self.created_at = datetime.now().isoformat(timespec="seconds")
@@ -55,12 +68,7 @@ class GameRunner:
 
     def _run(self) -> None:
         try:
-            engine = Engine(
-                self.state, self.agents,
-                on_event=self._on_event,
-                view_recorder=self._on_view,
-            )
-            engine.run()
+            self.session.run(on_event=self._on_event, view_recorder=self._on_view)
             self.status = "stopped" if self._stop.is_set() else "finished"
         except _Stopped:
             self.status = "stopped"
@@ -105,6 +113,7 @@ class GameRunner:
                 "revealed_role_cn": p.revealed_role.cn if p.revealed_role else None,
                 "died_day": p.died_day, "died_cause": p.died_cause,
                 "agent": self.lineup.specs[s].label,
+                "released": self.session.pool.runtimes[s].released,
                 # 真实身份只在结束后或开了上帝视角时给
                 "role": p.role.value if (finished or god) else None,
                 "role_cn": p.role.cn if (finished or god) else None,
@@ -118,6 +127,9 @@ class GameRunner:
             "board": board_summary(st.config.n_players),
             "config": st.config.as_dict(),
             "lineup": self.lineup.as_list(),
+            "deployment": self.deployment,
+            "seats_released": sorted(
+                s for s, rt in self.session.pool.runtimes.items() if rt.released),
             "day": st.day,
             "phase": st.phase,
             "current": self.current,
@@ -133,6 +145,10 @@ class GameRunner:
 
     def thoughts(self) -> list[dict]:
         return [t for t in self.state.thought_log if t["thought"]]
+
+    def agent_sessions(self) -> list[dict]:
+        """每个座位的 agent 会话 —— 容器被销毁之前抓下来的那一份。"""
+        return STORE.load_agent_sessions(self.id)
 
 
 class _Stopped(Exception):
@@ -205,15 +221,21 @@ class Handler(BaseHTTPRequestHandler):
                 "models": AVAILABLE_MODELS,
                 "backends": AVAILABLE_BACKENDS,
                 "efforts": EFFORT_LEVELS,
-                "llm_ready": LLMAgent is not None,
+                "deployments": DEPLOYMENTS,
+                "store": STORE_URI,
                 "defaults": {
                     "n_players": 12, "max_speech_chars": 450,
                     "max_iterations": 3, "sheriff": True, "wolf_explode": True,
+                    "deployment": DEFAULT_DEPLOYMENT,
                 },
             })
 
         if u.path == "/api/games":
-            return self._json([g.snapshot() for g in GAMES.values()])
+            live = [g.snapshot() for g in GAMES.values()]
+            live_ids = {g["id"] for g in live}
+            # 把库里的历史对局也列出来 —— 服务重启之后照样能复盘
+            past = [g for g in STORE.list_games(50) if g["id"] not in live_ids]
+            return self._json({"live": live, "past": past, "store": STORE_URI})
 
         if len(parts) >= 3 and parts[0] == "api" and parts[1] == "games":
             g = self._game(parts[2])
@@ -236,7 +258,10 @@ class Handler(BaseHTTPRequestHandler):
                     "markdown": render_replay(g.state, lineup=g.lineup),
                     "result": result_summary(g.state, g.lineup),
                     "thoughts": g.thoughts(),
+                    "sessions": g.agent_sessions(),
                 })
+            if tail == "sessions":
+                return self._json({"sessions": g.agent_sessions()})
             if tail == "views":
                 return self._json(build_all_views(g.state))
         return self._json({"error": "not found"}, 404)
@@ -260,8 +285,11 @@ class Handler(BaseHTTPRequestHandler):
                     max_iterations=int(payload.get("max_iterations", 3)),
                 )
                 lineup = Lineup.from_payload(n, payload.get("seats"))
+                deployment = payload.get("deployment", DEFAULT_DEPLOYMENT)
+                if deployment not in DEPLOYMENTS:
+                    raise ValueError(f"不认识的部署模式 {deployment!r}")
                 # GameRunner 会发牌，板子不合法在这里就会报错，必须一起包住
-                runner = GameRunner(config, lineup)
+                runner = GameRunner(config, lineup, deployment)
             except (ValueError, KeyError, TypeError) as exc:
                 return self._json({"error": f"配置不合法：{exc}"}, 400)
 
@@ -286,3 +314,6 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n已停止")
+    finally:
+        httpd.server_close()
+        STORE.close()

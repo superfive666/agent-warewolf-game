@@ -345,13 +345,26 @@ def _fmt_legal_action(view: PlayerView) -> str:
             line += f" —— {desc}"
         lines.append(line)
     lines.append("  · private_thought (string) —— 你的内心推理，其他玩家看不到")
+    if la.get("_memory"):
+        lines.append(
+            "  · notes_update (string) —— 更新你的私人笔记本。留空表示不改。"
+            "笔记本会一直跟着你（连容器重启也在），用来记你的推理链、"
+            "对每个人的判断、以及你打算怎么骗人。其他人永远看不到。"
+        )
     return "\n".join(lines)
 
 
-def turn_prompt(view: PlayerView, *, full: bool = False, error: str | None = None) -> str:
-    """一次决策请求。full=True 时发完整 timeline（首次调用），否则只发增量。"""
+def turn_prompt(view: PlayerView, *, full: bool = False, error: str | None = None,
+                notes: str = "") -> str:
+    """一次决策请求。full=True 时发完整 timeline（首次调用），否则只发增量。
+
+    notes 是这个 agent 自己的私人笔记本（跨回合、跨容器重启保留），
+    只有它自己看得到，任何其他玩家和其他 agent 都拿不到。
+    """
     blocks = ["════════ 场上局势 ════════", _fmt_public_state(view),
               "", "════════ 你的私有信息 ════════", _fmt_role_knowledge(view)]
+    if notes:
+        blocks += ["", "════════ 你的私人笔记本（只有你自己看得到）════════", notes]
     # 发言档案每回合都重发（不依赖对话历史），否则早期发言会随历史裁剪永久丢失
     archive = _fmt_speech_archive(view)
     if archive:
@@ -418,8 +431,10 @@ _SCHEMAS: dict[str, dict] = {
 }
 
 
-def output_schema(action_type: str) -> dict:
+def output_schema(action_type: str, *, memory: bool = False) -> dict:
     props = {**_SCHEMAS[action_type], **_THOUGHT}
+    if memory:
+        props["notes_update"] = _STR
     return {
         "type": "json_schema",
         "schema": {

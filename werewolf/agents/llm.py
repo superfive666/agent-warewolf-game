@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from ..prompts import output_schema, system_prompt, turn_prompt
 from ..roles import Role
@@ -30,6 +31,7 @@ class LLMAgent:
         max_tokens: int = 16000,
         client=None,
         verbose: bool = False,
+        memory_dir=None,
     ) -> None:
         self.seat = seat
         self.role = role
@@ -38,6 +40,11 @@ class LLMAgent:
         self.effort = effort
         self.max_tokens = max_tokens
         self.verbose = verbose
+        #: agent 的私有 memory 目录。容器化时挂一个生命周期长于容器的卷，
+        #: 容器被销毁、甚至崩溃重启，笔记都还在。
+        self.memory_dir = Path(memory_dir) if memory_dir else None
+        if self.memory_dir:
+            self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._client = client
         self._system: str | None = None
         self._messages: list[dict] = []
@@ -65,10 +72,12 @@ class LLMAgent:
             # system 整局逐字不变 → 命中 prompt cache
             self._system = system_prompt(view)
 
-        user = turn_prompt(view, full=first, error=error)
+        user = turn_prompt(view, full=first, error=error, notes=self.read_notes())
         self._messages.append({"role": "user", "content": user})
 
         action_type = view.legal_actions["action_type"]
+        if self.memory_dir:
+            view.legal_actions["_memory"] = True
         response = self._call(action_type)
         self._track_usage(response)
 
@@ -83,6 +92,9 @@ class LLMAgent:
             raise ValueError(f"模型返回的不是合法 JSON：{text[:200]!r}") from exc
 
         # private_thought 由引擎统一摘走并记进上帝日志，这里只做本地留档和打印
+        if self.memory_dir and data.get("notes_update"):
+            self.write_notes(data.pop("notes_update"))
+        data.pop("notes_update", None)
         thought = data.get("private_thought", "")
         self.thoughts.append(
             {"seq": view.generated_at_seq, "day": view.public_state["day"],
@@ -101,7 +113,8 @@ class LLMAgent:
                      "cache_control": {"type": "ephemeral"}}],
             messages=self._messages,
             thinking={"type": "adaptive"},
-            output_config={"effort": self.effort, "format": output_schema(action_type)},
+            output_config={"effort": self.effort,
+                           "format": output_schema(action_type, memory=bool(self.memory_dir))},
         )
         if self.max_tokens > 16000:
             with self.client.messages.stream(**kw) as stream:
@@ -109,6 +122,22 @@ class LLMAgent:
         return self.client.messages.create(**kw)
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    @property
+    def notes_path(self):
+        return self.memory_dir / "notes.md" if self.memory_dir else None
+
+    def read_notes(self) -> str:
+        p = self.notes_path
+        if p and p.is_file():
+            return p.read_text(encoding="utf-8")
+        return ""
+
+    def write_notes(self, text: str) -> None:
+        p = self.notes_path
+        if p:
+            p.write_text(text, encoding="utf-8")
+
     def _track_usage(self, response) -> None:
         u = getattr(response, "usage", None)
         if not u:

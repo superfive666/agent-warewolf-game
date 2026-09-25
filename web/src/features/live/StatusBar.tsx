@@ -4,6 +4,7 @@ import { Eyebrow } from '@/components/ui/Eyebrow';
 import { Icon } from '@/components/ui/Icon';
 import { StatusPill } from '@/components/ui/StatusPill';
 import { Switch } from '@/components/ui/Switch';
+import { cn } from '@/lib/cn';
 import { isNight, roman } from '@/lib/format';
 
 interface StatusBarProps {
@@ -18,6 +19,7 @@ export function StatusBar({ snapshot: s, god, onGodChange, onStop }: StatusBarPr
   const phase = s.phase_cn || s.phase;
   const cur = s.current ?? {};
   const running = s.status === 'running';
+  const locked = !!s.god_locked;
 
   return (
     <div className="flex min-h-[72px] flex-wrap items-center gap-5 border-b border-line-soft px-gutter py-3 max-phone:grid max-phone:grid-cols-[1fr_auto] max-phone:gap-1.5 max-phone:border-0 max-phone:px-4 max-phone:pt-3.5 max-phone:pb-1.5">
@@ -45,10 +47,16 @@ export function StatusBar({ snapshot: s, god, onGodChange, onStop }: StatusBarPr
       </div>
       <span className="flex-1 max-phone:hidden" />
       <div className="flex items-center gap-3 max-phone:fixed max-phone:inset-x-0 max-phone:bottom-0 max-phone:z-15 max-phone:gap-2.5 max-phone:border-t max-phone:border-line max-phone:bg-night max-phone:px-4 max-phone:pt-3 max-phone:pb-[calc(14px+env(safe-area-inset-bottom))]">
-        <label className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-full border border-gold-line bg-god-bg py-1.5 pr-2 pl-3.5 text-14 text-gold-hi max-phone:h-12 max-phone:flex-1 max-phone:justify-center max-phone:rounded-xl max-phone:bg-transparent">
-          <Icon name="eye" />
-          <span>上帝视角</span>
-          <Switch size="sm" checked={god} onChange={onGodChange} />
+        <label
+          title={locked ? '有真人玩家的对局，结束前不能开上帝视角' : undefined}
+          className={cn(
+            'flex min-h-11 cursor-pointer items-center gap-2.5 rounded-full border border-gold-line bg-god-bg py-1.5 pr-2 pl-3.5 text-14 text-gold-hi max-phone:h-12 max-phone:flex-1 max-phone:justify-center max-phone:rounded-xl max-phone:bg-transparent',
+            locked && 'cursor-not-allowed opacity-60',
+          )}
+        >
+          <Icon name={locked ? 'lock' : 'eye'} />
+          <span>{locked ? '上帝视角已锁' : '上帝视角'}</span>
+          <Switch size="sm" checked={god} disabled={locked} onChange={onGodChange} />
         </label>
         <Button
           variant="danger"

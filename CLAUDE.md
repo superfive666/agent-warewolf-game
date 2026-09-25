@@ -49,6 +49,7 @@ werewolf/
 ├── agents/
 │   ├── base.py         Agent 接口：只有 act(view) 一个方法
 │   ├── heuristic.py    规则 bot
+│   ├── human.py        真人玩家座位：act() 挂待办、阻塞等浏览器提交
 │   ├── chat_base.py    LLM 后端共用：历史、私人笔记本、JSON 抽取
 │   ├── llm.py          Claude 后端
 │   └── openai_agent.py OpenAI / 兼容网关后端（结构化输出能力自动降级）
@@ -68,6 +69,7 @@ werewolf/
 2. **好人的 `wolf_team` 恒为 `None`**（不是隐藏，是根本不构造）；狼队视角里也不能出现任何好人身份。
 3. **心路历程（`private_thought`）只进 GOD 层**，不进任何玩家视角。→ `tests/test_sandbox.py`
 4. **「上帝视角」开关在服务端过滤**：`god=0` 时 API 不返回非公开事件，不能只靠前端不渲染。
+   有真人座位的对局在结束前一律按 `god=0` 处理，`/views`、`/sessions` 返回 403。→ `tests/test_human_player.py`
 5. **会话必须先于销毁被保存**：座位离场时先 `GET /session` 入库，再删容器；
    遗言 / 开枪 / 移交警徽走完之前不得释放；白痴翻牌不释放。→ `tests/test_deployment.py`
 6. **边跑边写**会话库，不要改成对局结束再一次性 flush。
@@ -96,6 +98,7 @@ werewolf/
   | `test_deployment.py` | 存储后端一致性、视角序列化、座位生命周期、跨进程整局 |
   | `test_llm_agent.py` / `test_openai_backend.py` | LLM 后端（用假客户端 mock，**不打真实 API**） |
   | `test_i18n.py` | 显示层不得出现英文标识符 |
+| `test_human_player.py` | 真人座位：待办 / 提交 / 中止、座位凭证、有真人时锁上帝视角、表单全中文 |
 
 - 测试**不得联网、不得依赖 API key**；LLM 后端一律用 `unittest.mock` 或假客户端。
 - 需要 HTTP 服务的测试在本地随机端口起线程，用完关掉；需要子进程的测试必须保证不泄漏进程。

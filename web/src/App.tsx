@@ -38,6 +38,9 @@ export function App() {
     onFinished: () => setView((v) => (v === 'live' ? 'review' : v)),
   });
 
+  // 有真人在打的对局：服务端会忽略 god=1，这里也把开关拨回去（渲染期间调整，不写 effect）
+  if (god && snapshot?.god_locked) setGod(false);
+
   const go = (v: View) => {
     setView(v);
     window.scrollTo({ top: 0 });
@@ -59,7 +62,14 @@ export function App() {
       <main>
         <SetupView hidden={view !== 'setup'} onStarted={(id) => navigate(id)} />
         {view === 'live' && gameId && (
-          <LiveView snapshot={snapshot} events={events} god={god} onGodChange={setGod} onStop={stop} />
+          <LiveView
+            gameId={gameId}
+            snapshot={snapshot}
+            events={events}
+            god={god}
+            onGodChange={setGod}
+            onStop={stop}
+          />
         )}
         {view === 'review' && gameId && replay && (
           <ReviewView gameId={gameId} replay={replay} status={snapshot?.status} onAgain={() => go('setup')} />

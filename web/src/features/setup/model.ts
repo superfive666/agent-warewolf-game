@@ -30,6 +30,9 @@ export interface SetupState {
   apiKeyEnv: string;
 }
 
+/** 真人玩家座位的后端 key。一桌最多一个 */
+export const HUMAN_BACKEND = 'human';
+
 export const DEFAULT_SEAT: SeatConfig = { backend: 'heuristic', model: '', custom: '', effort: 'medium' };
 
 export function initialSetup(options: Options | null): SetupState {
@@ -103,7 +106,8 @@ export function llmUsage(
   if (!options) return null;
   const counts = new Map<string, number>();
   for (const s of state.seats) {
-    if (s.backend !== 'heuristic') counts.set(s.backend, (counts.get(s.backend) ?? 0) + 1);
+    // 规则 bot、真人座位不调模型，不需要密钥
+    if (options.backends[s.backend]?.needs_key) counts.set(s.backend, (counts.get(s.backend) ?? 0) + 1);
   }
   if (!counts.size) return null;
   const used = [...counts.keys()];
@@ -120,11 +124,20 @@ export function llmUsage(
   };
 }
 
+// ─────────── 真人座位 ───────────
+
+/** 选了真人玩家的座位号（从 1 开始） */
+export function humanSeats(seats: SeatConfig[]): number[] {
+  return seats.flatMap((s, i) => (s.backend === HUMAN_BACKEND ? [i + 1] : []));
+}
+
 // ─────────── 开局 ───────────
 
 export function ctaSubtitle(state: SetupState, options: Options | null): string {
   const [dep] = splitDesc(options?.deployments[state.deployment] ?? state.deployment);
-  return `${state.nPlayers} 人 · ${state.winRule === 'city' ? '屠城' : '屠边'} · ${dep} · 开局后全自动跑完`;
+  const [human] = humanSeats(state.seats);
+  const tail = human ? `你坐 ${human} 号` : '开局后全自动跑完';
+  return `${state.nPlayers} 人 · ${state.winRule === 'city' ? '屠城' : '屠边'} · ${dep} · ${tail}`;
 }
 
 export function buildGameRequest(state: SetupState): CreateGameRequest {

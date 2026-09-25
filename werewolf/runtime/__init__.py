@@ -19,12 +19,26 @@ def build_pool(state, lineup, *, deployment="inprocess", store=None, game_id="",
     roles = {s: state.players[s].role.value for s in state.seats}
     runtimes = {}
 
+    # 真人座位不管哪种部署模式都留在编排端进程里：浏览器是连到这里来交动作的
+    humans = set(lineup.human_seats())
+    if humans:
+        from ..agents.human import HumanAgent
+
+        for seat in humans:
+            runtimes[seat] = LocalRuntime(
+                seat, HumanAgent(seat, state.players[seat].role),
+                label=lineup.specs[seat].label)
+
+    if deployment not in DEPLOYMENTS:
+        raise ValueError(f"不认识的部署模式 {deployment!r}，可选：{sorted(DEPLOYMENTS)}")
+    agent_seats = [s for s in state.seats if s not in humans]
+
     if deployment == "inprocess":
         agents = lineup.build_agents(state, verbose=verbose)
-        for seat in state.seats:
+        for seat in agent_seats:
             runtimes[seat] = LocalRuntime(seat, agents[seat], label=lineup.specs[seat].label)
     elif deployment == "subprocess":
-        for seat in state.seats:
+        for seat in agent_seats:
             runtimes[seat] = SubprocessRuntime(
                 seat, lineup.specs[seat], game_id=game_id,
                 env={**(env or {}), "WEREWOLF_ROLE": roles[seat],
@@ -32,7 +46,7 @@ def build_pool(state, lineup, *, deployment="inprocess", store=None, game_id="",
     elif deployment == "docker":
         from .docker import DockerRuntime
 
-        for seat in state.seats:
+        for seat in agent_seats:
             runtimes[seat] = DockerRuntime(
                 seat, lineup.specs[seat], game_id=game_id, image=image,
                 env={**(env or {}), "WEREWOLF_ROLE": roles[seat],
@@ -40,13 +54,11 @@ def build_pool(state, lineup, *, deployment="inprocess", store=None, game_id="",
     elif deployment == "k8s":
         from .k8s import K8sRuntime
 
-        for seat in state.seats:
+        for seat in agent_seats:
             runtimes[seat] = K8sRuntime(
                 seat, lineup.specs[seat], game_id=game_id, image=image,
                 env={**(env or {}), "WEREWOLF_ROLE": roles[seat],
                      "WEREWOLF_SEED": str(state.config.seed or 0)}, **kw)
-    else:
-        raise ValueError(f"不认识的部署模式 {deployment!r}，可选：{sorted(DEPLOYMENTS)}")
 
     return RuntimePool(runtimes, store=store, game_id=game_id, roles=roles)
 

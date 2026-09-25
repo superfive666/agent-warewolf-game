@@ -8,7 +8,7 @@ import { Select } from '@/components/ui/Select';
 import { cn } from '@/lib/cn';
 import { effortCn } from '@/lib/format';
 
-import { backendModels, type SeatConfig } from '../model';
+import { backendModels, HUMAN_BACKEND, type SeatConfig } from '../model';
 
 interface BulkApplyProps {
   options: Options;
@@ -43,7 +43,10 @@ export function BulkApply({ options, onApply }: BulkApplyProps) {
         aria-label="后端"
         className={CONTROL}
         value={backend}
-        options={Object.entries(options.backends).map(([k, v]) => [k, v.label] as const)}
+        // 真人座位一桌只能有一个，不能套用到全部
+        options={Object.entries(options.backends)
+          .filter(([k]) => k !== HUMAN_BACKEND)
+          .map(([k, v]) => [k, v.label] as const)}
         onChange={(v) => {
           setBackend(v);
           setModel(firstModel(options, v));

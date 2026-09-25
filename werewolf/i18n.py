@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from .roles import Role
 
 #: 流程阶段
@@ -74,7 +76,8 @@ AUDIENCE_CN = {"public": "全场公开", "wolves": "仅狼人可见",
                "private": "仅当事人可见", "god": "上帝日志"}
 
 #: agent 后端
-BACKEND_CN = {"heuristic": "规则bot", "claude": "Claude", "openai": "OpenAI", "llm": "Claude"}
+BACKEND_CN = {"heuristic": "规则bot", "human": "真人玩家", "claude": "Claude", "openai": "OpenAI",
+              "llm": "Claude"}
 
 #: 警徽状态
 SHERIFF_STATUS_CN = {"none": "尚未竞选", "elected": "已产生",
@@ -184,3 +187,142 @@ def describe_action(action_type: str, action: dict | None) -> str:
     elif action_type == "badge_transfer":
         parts.append(f"警徽交给{seat(a['target'])}" if a.get("target") else "撕毁警徽")
     return "｜".join(p for p in parts if p)
+
+
+# --------------------------------------------------------------------------
+# 真人玩家座位：把合法动作 schema 和角色私有知识翻成浏览器能直接渲染的中文
+# --------------------------------------------------------------------------
+
+#: 动作字段名
+FIELD_CN = {
+    "speech": "发言", "claim": "宣称身份", "claim_detail": "补充说明",
+    "claimed_check": "公布验人结果", "badge_flow": "警徽流", "suspects": "怀疑",
+    "trusts": "信任", "explode": "自爆", "quit": "退水", "target": "目标",
+    "heal": "解药", "poison": "毒药", "run": "竞选警长", "reason": "理由",
+    "kill_suggestion": "建议刀谁", "my_position": "我的定位", "strategy_note": "战术备注",
+}
+
+#: 布尔字段的两个选项（是, 否）
+_BOOL_CN = {
+    "run": ("上警", "不上警"), "heal": ("用解药", "不用"), "explode": ("自爆", "不自爆"),
+    "quit": ("退水", "继续竞选"),
+}
+
+#: 这些可选字段收进「更多」里，默认不展开
+_ADVANCED_FIELDS = {"claim_detail", "reason", "strategy_note", "suspects", "trusts"}
+
+#: 表单里不给真人填的字段（结构复杂、可选，留空即可）
+_SKIPPED_FIELDS = {"position_plan"}
+
+#: 多选座位字段的数量上限
+_MAX_ITEMS = {"badge_flow": 3}
+
+
+def _null_label(desc: str, default: str = "不选") -> str:
+    """schema 描述里写着「null 表示弃票」这类说明，拿来当「空」选项的名字。"""
+    m = re.search(r"null ?表示([^，。,（(]+)", desc or "")
+    return m.group(1).strip() if m else default
+
+
+#: 给 LLM 看的字段说明里有 JSON 示例，真人看不懂，换成人话
+_HINT_CN = {
+    "claimed_check": "以预言家身份公布验人结果：选一个座位，再选查杀或金水。不公布就都不选。",
+    "run": "",  # 动作说明里已经讲过警长的权力
+}
+
+
+def _hint(name: str, desc: str) -> str:
+    """字段说明给真人看：去掉「null 表示……」这类写给模型的话。"""
+    if name in _HINT_CN:
+        return _HINT_CN[name]
+    desc = re.sub(r"[，,；;]?\s*null ?表示[^，。,；;]*[，,；;]?", "", desc or "").strip()
+    return desc
+
+
+def _option(value) -> dict:
+    return {"value": value, "label": f"{value}号" if isinstance(value, int) else str(value)}
+
+
+def human_form(legal: dict | None, *, alive: list[int], me: int) -> dict | None:
+    """合法动作 → 表单描述。前端只管照着渲染，不认识任何英文枚举。
+
+    返回 ``{action_type, action_cn, description, fields: [...]}``，每个字段：
+    ``{name, label, kind, required, desc, advanced, options?, max_items?, max_chars?}``，
+    ``kind`` 取 ``choice``（单选）/ ``multi``（多选座位）/ ``text`` / ``textarea`` / ``check``（验人结果）。
+    ``options`` 里的 ``value`` 原样回传给服务端即可。
+    """
+    if not legal:
+        return None
+    fields = []
+    others = [s for s in alive if s != me]
+    for name, spec in (legal.get("schema") or {}).items():
+        if name in _SKIPPED_FIELDS:
+            continue
+        typ = str(spec.get("type", "string"))
+        desc = spec.get("desc", "")
+        f = {"name": name, "label": FIELD_CN.get(name, name), "required": bool(spec.get("required")),
+             "desc": _hint(name, desc), "advanced": name in _ADVANCED_FIELDS}
+        opts = spec.get("options")
+        if typ == "bool":
+            yes, no = _BOOL_CN.get(name, ("是", "否"))
+            f.update(kind="choice", options=[
+                {"value": v, "label": yes if v else no} for v in (opts or [True, False])])
+        elif typ == "enum":
+            pos = name == "my_position"
+            f.update(kind="choice", options=[
+                {"value": v,
+                 "label": (position_cn(v) if pos else role_cn(v)) if v is not None
+                 else ("不认领" if pos else "不起跳")}
+                for v in (opts or [])])
+        elif typ.startswith("int"):
+            f.update(kind="choice", options=[
+                _option(v) if v is not None else {"value": None, "label": _null_label(desc)}
+                for v in (opts or [])])
+        elif typ.startswith("array"):
+            f.update(kind="multi", options=[_option(s) for s in others],
+                     max_items=_MAX_ITEMS.get(name))
+        elif typ.startswith("object"):
+            f.update(kind="check", options=[_option(s) for s in others],
+                     results=[{"value": k, "label": v} for k, v in CHECK_CN.items()])
+        elif name == "speech":
+            f.update(kind="textarea")
+            m = re.search(r"最多 (\d+) 字", desc)
+            if m:
+                f["max_chars"] = int(m.group(1))
+        else:
+            f.update(kind="text")
+        fields.append(f)
+    return {
+        "action_type": legal.get("action_type"),
+        "action_cn": action_cn(legal.get("action_type")),
+        "description": legal.get("description", ""),
+        "fields": fields,
+    }
+
+
+def knowledge_cn(identity: dict) -> list[str]:
+    """个人视角里的角色私有知识 → 几行中文。"""
+    k = identity.get("role_knowledge") or {}
+    role = identity.get("role")
+    out: list[str] = []
+    if role == Role.SEER.value:
+        for c in k.get("checks", []):
+            out.append(f"第{c.get('day')}夜 查验{c.get('target')}号：{check_cn(c.get('result'))}")
+        if not k.get("checks"):
+            out.append("还没有查验过任何人")
+    elif role == Role.WITCH.value:
+        out.append(f"解药：{'还在' if k.get('has_antidote') else '已用'}；"
+                   f"毒药：{'还在' if k.get('has_poison') else '已用'}")
+        for x in k.get("potion_log", []):
+            what = "救了" if x.get("potion") == "antidote" else "毒了"
+            out.append(f"第{x.get('day')}夜 {what}{x.get('target')}号")
+    elif role == Role.HUNTER.value:
+        out.append("可以开枪" if k.get("can_shoot") else "被毒死，不能开枪")
+    elif role == Role.IDIOT.value:
+        out.append("已翻牌，失去投票权" if k.get("revealed") else "还没翻牌")
+    elif role == Role.WEREWOLF.value:
+        mates = k.get("teammates", [])
+        alive = set(k.get("alive_teammates", []))
+        out.append("狼队友：" + ("、".join(
+            f"{s}号{'' if s in alive else '（已出局）'}" for s in mates) or "无"))
+    return out

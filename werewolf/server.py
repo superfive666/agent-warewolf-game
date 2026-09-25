@@ -11,9 +11,11 @@
 """
 from __future__ import annotations
 
+import hmac
 import json
 import mimetypes
 import os
+import secrets
 import threading
 import time
 import traceback
@@ -24,6 +26,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import i18n
+from .agents.human import HumanCancelled, HumanNotWaiting
 from .events import Audience
 from .lineup import AVAILABLE_BACKENDS, AVAILABLE_MODELS, EFFORT_LEVELS, Lineup
 from .replay import (SPEECH_EVENT_TYPES, build_timeline, players_from_events,
@@ -34,7 +37,7 @@ from .runtime import DEPLOYMENTS
 from .session import GameSession
 from .state import GameConfig
 from .store import open_store
-from .views import build_all_views
+from .views import build_all_views, build_player_view
 
 #: 全局会话存储。所有对局都往这里写，重启后还能复盘。
 STORE_URI = os.environ.get("WEREWOLF_STORE", "sqlite:runs/werewolf.db")
@@ -83,6 +86,10 @@ class GameRunner:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._events: list[dict] = []
+        #: 真人座位（最多一个）和它的凭证。凭证只在开局返回里给一次
+        humans = lineup.human_seats()
+        self.human_seat: int | None = humans[0] if humans else None
+        self.human_token: str | None = secrets.token_urlsafe(24) if humans else None
 
     # ---------------- 生命周期 ----------------
     def start(self) -> None:
@@ -92,12 +99,16 @@ class GameRunner:
 
     def stop(self) -> None:
         self._stop.set()
+        # 引擎线程可能正阻塞在真人座位上等人提交 —— 把它叫醒
+        human = self.human_agent()
+        if human is not None:
+            human.cancel()
 
     def _run(self) -> None:
         try:
             self.session.run(on_event=self._on_event, view_recorder=self._on_view)
             self.status = "stopped" if self._stop.is_set() else "finished"
-        except _Stopped:
+        except (_Stopped, HumanCancelled):
             self.status = "stopped"
         except Exception:
             self.status = "failed"
@@ -160,8 +171,55 @@ class GameRunner:
         self.current = {"phase": self.state.phase, "day": self.state.day,
                         "seat": seat, "action_type": action_type}
 
+    # ---------------- 真人座位 ----------------
+    @property
+    def god_locked(self) -> bool:
+        """有真人在打的对局，进行中一律不给上帝视角（服务端强制，不靠前端）。"""
+        return self.human_seat is not None and self.status in ("pending", "running")
+
+    def human_agent(self):
+        if self.human_seat is None:
+            return None
+        return self.session.pool.runtimes[self.human_seat].agent
+
+    def check_token(self, token: str | None) -> bool:
+        if not self.human_token or not token:
+            return False
+        return hmac.compare_digest(self.human_token, str(token))
+
+    def seat_view(self) -> dict:
+        """真人座位此刻的个人视角 + 待办。视角和 agent 拿到的是同一个函数生成的。"""
+        seat = self.human_seat
+        human = self.human_agent()
+        pending = human.pending()
+        # 引擎线程可能正在追加事件；视角只读，撞上并发修改就重来一次
+        for _ in range(5):
+            try:
+                view = build_player_view(self.state, seat).as_dict()
+                break
+            except RuntimeError:
+                time.sleep(0.01)
+        else:
+            view = build_player_view(self.state, seat).as_dict()
+        view.pop("delta", None)  # 增量是给 LLM 省 token 用的，浏览器要全量
+        if pending:
+            pending["action_cn"] = i18n.action_cn(pending.get("action_type"))
+            # 合法动作翻成中文表单，前端照着渲染，不用认识任何英文枚举
+            pending["form"] = i18n.human_form(
+                pending.get("legal_actions"),
+                alive=view["public_state"]["alive_seats"], me=seat)
+        return {
+            "seat": seat,
+            "view": view,
+            "knowledge_cn": i18n.knowledge_cn(view["identity"]),
+            "pending": pending,
+            "released": self.session.pool.runtimes[seat].released,
+            "status": self.status,
+        }
+
     # ---------------- 给前端的数据 ----------------
     def events_since(self, since: int, god: bool) -> list[dict]:
+        god = god and not self.god_locked
         with self._lock:
             evts = self._events[since:]
         if god:
@@ -170,6 +228,7 @@ class GameRunner:
 
     def snapshot(self, god: bool = False) -> dict:
         st = self.state
+        god = god and not self.god_locked
         finished = self.status in ("finished", "failed", "stopped")
         players = []
         for s in st.seats:
@@ -222,6 +281,9 @@ class GameRunner:
             "days": st.day,
             "n_players": st.config.n_players,
             "stored": False,
+            "has_human": self.human_seat is not None,
+            "human_seat": self.human_seat,
+            "god_locked": self.god_locked,
         }
 
     def thoughts(self) -> list[dict]:
@@ -371,6 +433,11 @@ class StoredGame:
             "days": res.get("days", rec.get("days")) or 0,
             "n_players": n,
             "stored": True,
+            "has_human": any(x.get("backend") == "human" for x in self.lineup),
+            "human_seat": next((x.get("seat") for x in self.lineup
+                                if x.get("backend") == "human"), None),
+            # 历史对局都已结束，没有需要锁的
+            "god_locked": False,
         }
 
     def thoughts(self) -> list[dict]:
@@ -566,6 +633,15 @@ class Handler(BaseHTTPRequestHandler):
                     "duration_s": g.duration_s,
                     "stored": False,
                 })
+            if tail == "seat":
+                if g.human_seat is None:
+                    return self._json({"error": "这局没有真人座位"}, 404)
+                if not g.check_token(q.get("token", [""])[0]):
+                    return self._json({"error": "座位凭证不对，只能以旁观者身份观看"}, 403)
+                return self._json(g.seat_view())
+            if tail in ("sessions", "views") and g.god_locked:
+                # 这两份数据里有每个座位的真实身份，有真人在打时一律不给
+                return self._json({"error": "有真人玩家的对局，结束前不能查看上帝视角数据"}, 403)
             if tail == "sessions":
                 return self._json({"sessions": g.agent_sessions()})
             if tail == "views":
@@ -633,7 +709,11 @@ class Handler(BaseHTTPRequestHandler):
 
             GAMES[runner.id] = runner
             runner.start()
-            return self._json(runner.snapshot(), 201)
+            snap = runner.snapshot()
+            if runner.human_seat is not None:
+                # 座位凭证只在这里给一次；丢了就只能旁观
+                snap["human"] = {"seat": runner.human_seat, "token": runner.human_token}
+            return self._json(snap, 201)
 
         if len(parts) == 4 and parts[0] == "api" and parts[1] == "games" and parts[3] == "stop":
             g = self._game(parts[2])
@@ -641,6 +721,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             g.stop()
             return self._json({"ok": True, "status": g.status})
+
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "games" and parts[3] == "act":
+            g = self._game(parts[2])
+            if g is None:
+                return
+            if g.human_seat is None:
+                return self._json({"error": "这局没有真人座位"}, 404)
+            if not g.check_token(payload.get("token")):
+                return self._json({"error": "座位凭证不对"}, 403)
+            try:
+                g.human_agent().submit(payload.get("request_id", -1), payload.get("action"))
+            except HumanNotWaiting as exc:
+                return self._json({"error": str(exc)}, 409)
+            except (ValueError, TypeError) as exc:
+                return self._json({"error": f"动作格式不对：{exc}"}, 400)
+            return self._json({"ok": True})
         return self._json({"error": "not found"}, 404)
 
 

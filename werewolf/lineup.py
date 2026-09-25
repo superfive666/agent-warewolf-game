@@ -33,6 +33,8 @@ AVAILABLE_MODELS = CLAUDE_MODELS
 AVAILABLE_BACKENDS = {
     "heuristic": {"label": "规则 bot", "note": "零依赖、毫秒级、不花钱，用来凑桌或做对照组",
                   "models": {}, "needs_key": None},
+    "human": {"label": "真人玩家", "note": "留给你自己坐。一桌最多 1 个；有真人时对局中不能开上帝视角",
+              "models": {}, "needs_key": None},
     "claude": {"label": "Claude", "note": "需要 ANTHROPIC_API_KEY",
                "models": CLAUDE_MODELS, "needs_key": "ANTHROPIC_API_KEY",
                "custom_model": False},
@@ -46,6 +48,12 @@ AVAILABLE_BACKENDS = {
 BACKEND_ALIASES = {"llm": "claude"}
 
 EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+
+#: 一桌最多几个真人座位
+MAX_HUMAN_SEATS = 1
+
+#: 不调用模型的后端（不需要密钥，也不算 LLM 座位）
+NON_LLM_BACKENDS = {"heuristic", "human"}
 
 
 @dataclass
@@ -110,7 +118,7 @@ class SeatSpec:
 
         if not self.label:
             self.label = (
-                info["label"] if self.backend == "heuristic"
+                info["label"] if self.backend in NON_LLM_BACKENDS
                 else info["models"].get(self.model, {}).get("label") or self.model
             )
 
@@ -165,17 +173,23 @@ class Lineup:
                 api_key=(d.get("api_key") or "").strip(),
                 api_key_env=(d.get("api_key_env") or "").strip(),
             )
+        humans = [s for s, sp in specs.items() if sp.backend == "human"]
+        if len(humans) > MAX_HUMAN_SEATS:
+            raise ValueError(f"一桌最多 {MAX_HUMAN_SEATS} 个真人座位，现在选了 {humans}")
         return cls(specs)
 
     def missing_keys(self) -> list[int]:
         """哪些座位配了 LLM 但拿不到密钥 —— 开局前就该提示，而不是打到一半才报错。"""
         return [
             sp.seat for sp in self.specs.values()
-            if sp.backend != "heuristic" and not sp.has_api_key()
+            if sp.backend not in NON_LLM_BACKENDS and not sp.has_api_key()
         ]
 
     def uses_llm(self) -> bool:
-        return any(sp.backend != "heuristic" for sp in self.specs.values())
+        return any(sp.backend not in NON_LLM_BACKENDS for sp in self.specs.values())
+
+    def human_seats(self) -> list[int]:
+        return sorted(s for s, sp in self.specs.items() if sp.backend == "human")
 
     def as_list(self) -> list[dict]:
         return [self.specs[s].as_dict() for s in sorted(self.specs)]
@@ -187,7 +201,11 @@ class Lineup:
         for seat in state.seats:
             sp = self.specs[seat]
             role: Role = state.players[seat].role
-            if sp.backend == "claude":
+            if sp.backend == "human":
+                from .agents.human import HumanAgent
+
+                agents[seat] = HumanAgent(seat, role)
+            elif sp.backend == "claude":
                 from .agents.llm import LLMAgent
 
                 agents[seat] = LLMAgent(

@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import threading
+import time
 import traceback
 import uuid
 from datetime import datetime
@@ -18,8 +19,10 @@ from urllib.parse import parse_qs, urlparse
 from . import i18n
 from .events import Audience
 from .lineup import AVAILABLE_BACKENDS, AVAILABLE_MODELS, EFFORT_LEVELS, Lineup
-from .replay import render_replay, result_summary
-from .roles import BOARDS, board_summary
+from .replay import (SPEECH_EVENT_TYPES, build_timeline, players_from_events,
+                     render_replay, render_stored_replay, result_summary,
+                     thoughts_from_events, thoughts_from_turns)
+from .roles import BOARDS, Faction, board_summary
 from .runtime import DEPLOYMENTS
 from .session import GameSession
 from .state import GameConfig
@@ -51,7 +54,9 @@ class GameRunner:
         self.state = self.session.state
         self.status = "pending"  # pending | running | finished | failed | stopped
         self.error: str | None = None
-        self.created_at = datetime.now().isoformat(timespec="seconds")
+        self._t0 = time.time()
+        self._t1: float | None = None
+        self.created_at = _iso(self._t0)
         self.current: dict = {"phase": "SETUP", "day": 0, "seat": None, "action_type": None}
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -76,6 +81,47 @@ class GameRunner:
         except Exception:
             self.status = "failed"
             self.error = traceback.format_exc()
+        finally:
+            self._t1 = time.time()
+
+    @property
+    def finished_at(self) -> str | None:
+        return _iso(self._t1) if self._t1 else None
+
+    @property
+    def duration_s(self) -> float:
+        return round((self._t1 or time.time()) - self._t0, 3)
+
+    def speech_progress(self) -> dict | None:
+        """发言阶段的进度：{order: [座位], done: 已发言人数, total}；其他阶段为 None。"""
+        st = self.state
+        phase = st.phase
+        events = list(st.event_log)
+        if phase == "DAY_SPEECH":
+            order, kinds, marker = list(st.speech_order), {"speech"}, "speech_order"
+        elif phase == "SHERIFF_SPEECH":
+            order, kinds, marker = None, {"sheriff_speech"}, "sheriff_signup"
+        elif phase == "SHERIFF_PK":
+            order, kinds, marker = None, {"sheriff_pk_speech"}, "phase"
+        elif phase == "DAY_VOTE_PK":
+            order, kinds, marker = None, {"pk_speech"}, "phase"
+        else:
+            return None
+        start = 0
+        for i in range(len(events) - 1, -1, -1):
+            e = events[i]
+            if e.type == marker and (marker == "sheriff_signup" or e.phase == phase):
+                start = i + 1
+                if order is None:
+                    order = list(e.targets) if marker == "sheriff_signup" else []
+                break
+        if not order and phase in ("SHERIFF_PK", "DAY_VOTE_PK"):
+            eng = self.session.engine
+            order = list(getattr(eng, "_last_tied", None) or [])
+        order = order or []
+        done = sum(1 for e in events[start:]
+                   if e.type in kinds and e.audience is Audience.PUBLIC)
+        return {"order": order, "done": min(done, len(order)), "total": len(order)}
 
     # ---------------- 引擎回调 ----------------
     def _on_event(self, e) -> None:
@@ -148,6 +194,13 @@ class GameRunner:
             "winner_cn": st.winner.cn if st.winner else None,
             "end_reason": st.end_reason,
             "n_thoughts": len([t for t in st.thought_log if t["thought"]]),
+            "speech_progress": self.speech_progress(),
+            "started_at": self.created_at,
+            "finished_at": self.finished_at,
+            "duration_s": self.duration_s,
+            "days": st.day,
+            "n_players": st.config.n_players,
+            "stored": False,
         }
 
     def thoughts(self) -> list[dict]:
@@ -155,13 +208,11 @@ class GameRunner:
 
     def agent_sessions(self) -> list[dict]:
         """每个座位的 agent 会话 —— 容器被销毁之前抓下来的那一份。"""
-        out = []
-        for x in STORE.load_agent_sessions(self.id):
-            out.append({**x,
-                        "role_cn": i18n.role_cn(x.get("role")),
-                        "backend_cn": i18n.BACKEND_CN.get(x.get("backend"), x.get("backend")),
-                        "release_reason_cn": i18n.release_cn(x.get("release_reason"))})
-        return out
+        return _decorate_sessions(STORE.load_agent_sessions(self.id))
+
+    def all_events(self) -> list[dict]:
+        with self._lock:
+            return list(self._events)
 
 
 class _Stopped(Exception):
@@ -169,6 +220,190 @@ class _Stopped(Exception):
 
 
 GAMES: dict[str, GameRunner] = {}
+
+
+def _iso(ts) -> str | None:
+    if ts in (None, ""):
+        return None
+    if isinstance(ts, str):
+        return ts
+    return datetime.fromtimestamp(float(ts)).isoformat(timespec="seconds")
+
+
+def _duration(g: dict) -> float | None:
+    t0, t1 = g.get("created_at"), g.get("finished_at")
+    if isinstance(t0, (int, float)) and isinstance(t1, (int, float)):
+        return round(t1 - t0, 3)
+    return None
+
+
+# ---------------- 历史对局：只剩库里的数据时，拼出和内存对局一样形状的数据 ----------------
+
+class StoredGame:
+    """服务重启后，GAMES 里没有这局，但会话库里有。"""
+
+    def __init__(self, gid: str, record: dict) -> None:
+        self.id = gid
+        self.record = record
+        self.result = record.get("result") or {}
+        self.config = record.get("config") or self.result.get("config") or {}
+        self.lineup = record.get("lineup") or []
+        self._events: list[dict] | None = None
+
+    @classmethod
+    def load(cls, gid: str) -> "StoredGame | None":
+        rec = STORE.load_game(gid)
+        return cls(gid, rec) if rec else None
+
+    @property
+    def events(self) -> list[dict]:
+        if self._events is None:
+            self._events = STORE.load_events(self.id)
+        return self._events
+
+    def events_since(self, since: int, god: bool) -> list[dict]:
+        evts = [e for e in self.events if e.get("seq", 0) > since]
+        if god:
+            return evts
+        return [e for e in evts if e.get("audience") == Audience.PUBLIC.value]
+
+    @property
+    def status(self) -> str:
+        st = self.record.get("status") or "finished"
+        # 库里还是 running，说明服务在对局中途被停掉了
+        return "stopped" if st in ("running", "pending") else st
+
+    @property
+    def duration_s(self) -> float | None:
+        return _duration(self.record)
+
+    def players(self) -> list[dict]:
+        base = self.result.get("players") or players_from_events(self.events, self.lineup)
+        claims: dict[int, str] = {}
+        revealed: dict[int, str] = {}
+        for e in self.events:
+            if e.get("audience") != Audience.PUBLIC.value:
+                continue
+            claim = (e.get("payload") or {}).get("claim")
+            if e.get("type") in SPEECH_EVENT_TYPES and claim and e.get("actor"):
+                claims[e["actor"]] = claim
+            if e.get("type") == "idiot_reveal":
+                revealed[e.get("actor")] = "IDIOT"
+            elif e.get("type") == "explode":
+                revealed[e.get("actor")] = "WEREWOLF"
+        out = []
+        for p in base:
+            s = p["seat"]
+            out.append({
+                **p,
+                "name": f"{s}号",
+                "revealed_role": revealed.get(s),
+                "revealed_role_cn": i18n.role_cn(revealed.get(s)),
+                "released": True,
+                "claim": claims.get(s),
+                "claim_cn": i18n.role_cn(claims.get(s)),
+            })
+        return out
+
+    def snapshot(self, god: bool = False) -> dict:
+        res, rec = self.result, self.record
+        n = self.config.get("n_players")
+        try:
+            board = board_summary(n)
+        except (ValueError, KeyError, TypeError):
+            board = None
+        winner = res.get("winner", rec.get("winner"))
+        sheriff_status = res.get("sheriff_status") or "none"
+        players = self.players()
+        error = res.get("error")
+        if rec.get("status") in ("running", "pending"):
+            error = "服务在对局进行中重启，这一局没有跑完。"
+        return {
+            "id": self.id,
+            "status": self.status,
+            "error": error,
+            "created_at": _iso(rec.get("created_at")),
+            "board": board,
+            "config": self.config,
+            "lineup": self.lineup,
+            "deployment": rec.get("deployment"),
+            "seats_released": [p["seat"] for p in players],
+            "day": res.get("days", rec.get("days")) or 0,
+            "phase": "GAME_OVER",
+            "phase_cn": i18n.phase_cn("GAME_OVER"),
+            "current": {"phase": "GAME_OVER", "day": res.get("days", rec.get("days")) or 0,
+                        "seat": None, "action_type": None,
+                        "phase_cn": i18n.phase_cn("GAME_OVER"), "action_cn": ""},
+            "players": players,
+            "sheriff": res.get("sheriff"),
+            "sheriff_status": sheriff_status,
+            "sheriff_status_cn": i18n.SHERIFF_STATUS_CN.get(sheriff_status, ""),
+            "total_events": len(self.events),
+            "winner": winner,
+            "winner_cn": res.get("winner_cn") or i18n_winner_cn(winner),
+            "end_reason": res.get("reason", rec.get("end_reason")) or "",
+            "n_thoughts": len(self.thoughts()),
+            "speech_progress": None,
+            "started_at": _iso(rec.get("created_at")),
+            "finished_at": _iso(rec.get("finished_at")),
+            "duration_s": self.duration_s,
+            "days": res.get("days", rec.get("days")) or 0,
+            "n_players": n,
+            "stored": True,
+        }
+
+    def thoughts(self) -> list[dict]:
+        th = thoughts_from_events(self.events)
+        return th or thoughts_from_turns(STORE.load_turns(self.id))
+
+    def agent_sessions(self) -> list[dict]:
+        return _decorate_sessions(STORE.load_agent_sessions(self.id))
+
+    def replay(self) -> dict:
+        thoughts = self.thoughts()
+        rec = {**self.record, "config": self.config}
+        return {
+            "markdown": render_stored_replay(rec, self.events, thoughts),
+            "result": self.result or None,
+            "thoughts": thoughts,
+            "sessions": self.agent_sessions(),
+            "timeline": build_timeline(self.events),
+            "duration_s": self.duration_s,
+            "stored": True,
+        }
+
+
+def i18n_winner_cn(winner) -> str | None:
+    try:
+        return Faction(winner).cn if winner else None
+    except ValueError:
+        return None
+
+
+def _decorate_sessions(rows: list[dict]) -> list[dict]:
+    return [{**x,
+             "role_cn": i18n.role_cn(x.get("role")),
+             "backend_cn": i18n.BACKEND_CN.get(x.get("backend"), x.get("backend")),
+             "release_reason_cn": i18n.release_cn(x.get("release_reason"))}
+            for x in rows]
+
+
+def _history_entry(g: dict) -> dict:
+    """列表页用的历史对局条目：库里的原字段不动，只补展示要用的。"""
+    rec = STORE.load_game(g["id"]) or {}
+    cfg = rec.get("config") or {}
+    res = rec.get("result") or {}
+    status = g.get("status")
+    return {
+        **g,
+        "status": "stopped" if status in ("running", "pending") else status,
+        "winner_cn": res.get("winner_cn") or i18n_winner_cn(g.get("winner")),
+        "n_players": cfg.get("n_players"),
+        "started_at": _iso(g.get("created_at")),
+        "ended_at": _iso(g.get("finished_at")),
+        "duration_s": _duration(g),
+        "stored": True,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -213,7 +448,7 @@ class Handler(BaseHTTPRequestHandler):
     def _game(self, gid: str) -> GameRunner | None:
         g = GAMES.get(gid)
         if g is None:
-            self._json({"error": f"game {gid} not found"}, 404)
+            self._json({"error": f"对局 {gid} 不存在"}, 404)
         return g
 
     # ---------------- 路由 ----------------
@@ -255,17 +490,24 @@ class Handler(BaseHTTPRequestHandler):
             })
 
         if u.path == "/api/games":
-            live = [g.snapshot() for g in GAMES.values()]
+            live = []
+            for g in GAMES.values():
+                snap = g.snapshot()
+                live.append({**snap, "ended_at": snap["finished_at"]})
             live_ids = {g["id"] for g in live}
             # 把库里的历史对局也列出来 —— 服务重启之后照样能复盘
-            past = [g for g in STORE.list_games(50) if g["id"] not in live_ids]
+            past = [_history_entry(g) for g in STORE.list_games(50) if g["id"] not in live_ids]
             return self._json({"live": live, "past": past, "store": STORE_URI})
 
         if len(parts) >= 3 and parts[0] == "api" and parts[1] == "games":
+            tail = parts[3] if len(parts) > 3 else ""
+            if parts[2] not in GAMES:
+                stored = StoredGame.load(parts[2])
+                if stored is not None:
+                    return self._stored_get(stored, tail, q, god)
             g = self._game(parts[2])
             if g is None:
                 return
-            tail = parts[3] if len(parts) > 3 else ""
             if not tail:
                 return self._json(g.snapshot(god))
             if tail == "events":
@@ -283,11 +525,32 @@ class Handler(BaseHTTPRequestHandler):
                     "result": result_summary(g.state, g.lineup),
                     "thoughts": g.thoughts(),
                     "sessions": g.agent_sessions(),
+                    "timeline": build_timeline(g.all_events()),
+                    "duration_s": g.duration_s,
+                    "stored": False,
                 })
             if tail == "sessions":
                 return self._json({"sessions": g.agent_sessions()})
             if tail == "views":
                 return self._json(build_all_views(g.state))
+        return self._json({"error": "not found"}, 404)
+
+    def _stored_get(self, g: StoredGame, tail: str, q: dict, god: bool) -> None:
+        if not tail:
+            return self._json(g.snapshot(god))
+        if tail == "events":
+            since = int(q.get("since", ["0"])[0])
+            return self._json({
+                "events": g.events_since(since, god),
+                "total": len(g.events),
+                "snapshot": g.snapshot(god),
+            })
+        if tail == "replay":
+            return self._json(g.replay())
+        if tail == "sessions":
+            return self._json({"sessions": g.agent_sessions()})
+        if tail == "views":
+            return self._json({"error": "历史对局不保留逐座位视角，请看复盘"}, 404)
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:

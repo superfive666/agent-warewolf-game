@@ -33,6 +33,7 @@ class SubprocessRuntime(HttpRuntime):
         self.env = dict(env or {})
         self.port = _free_port()
         self.proc: subprocess.Popen | None = None
+        self._tail = ""
         super().__init__(seat, f"http://127.0.0.1:{self.port}",
                          label=label or f"proc:{spec.label}", **kw)
 
@@ -64,18 +65,29 @@ class SubprocessRuntime(HttpRuntime):
         """杀进程。**memory 目录保留** —— 会话和笔记要留下来复盘。"""
         if self._released:
             return
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        if self.proc:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=5)
+            # 管道要显式关掉，否则每个座位漏一个 fd，一台机器跑几十局就用光了
+            if self.proc.stdout and not self.proc.stdout.closed:
+                self._tail = self._read_tail()
+                self.proc.stdout.close()
         super().release(reason)
 
-    def logs(self, tail: int = 50) -> str:
-        if not self.proc or not self.proc.stdout:
-            return ""
+    def _read_tail(self) -> str:
         try:
             return self.proc.stdout.read().decode(errors="replace")[-4000:]
         except Exception:
             return ""
+
+    def logs(self, tail: int = 50) -> str:
+        if self._tail:
+            return self._tail
+        if not self.proc or not self.proc.stdout or self.proc.stdout.closed:
+            return ""
+        return self._read_tail()

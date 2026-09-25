@@ -447,7 +447,20 @@ class Engine:
 
     # ====================== 天亮结算 ======================
 
-    def run_dawn(self) -> bool:
+    def announce_daybreak(self) -> None:
+        """只宣布天亮，不公布死讯。
+
+        第一天的警长竞选要在公布死讯【之前】进行 —— 竞选时全场（包括昨晚被刀的人
+        自己）都还不知道谁死了，这是这个环节博弈的前提。
+        """
+        st = self.state
+        st.phase = "DAWN"
+        extra = ("首先进行警长竞选，竞选结束后再公布昨晚的情况。"
+                 if st.day == 1 and st.config.sheriff else "")
+        self.emit(type="daybreak", audience=Audience.PUBLIC,
+                  text=f"—— 第 {st.day} 天 白天 —— 上帝：天亮了。{extra}")
+
+    def run_dawn(self, *, allow_last_words: bool = True) -> bool:
         """公布死讯并处理首夜遗言。返回游戏是否继续。"""
         st = self.state
         st.phase = "DAWN"
@@ -473,15 +486,15 @@ class Engine:
 
         if deaths:
             self.emit(type="dawn", audience=Audience.PUBLIC, targets=sorted(deaths),
-                      text=f"上帝：天亮了。昨晚，{ '、'.join(f'{s}号' for s in sorted(deaths)) } 倒牌出局。")
+                      text=f"上帝：昨晚，{ '、'.join(f'{s}号' for s in sorted(deaths)) } 倒牌出局。")
         else:
-            self.emit(type="dawn", audience=Audience.PUBLIC, text="上帝：天亮了。昨晚是平安夜。")
+            self.emit(type="dawn", audience=Audience.PUBLIC, text="上帝：昨晚是平安夜。")
 
         if st.check_winner():
             return False
 
-        # 遗言：仅首夜死者有遗言
-        if deaths and st.day == 1 and st.config.first_night_last_words:
+        # 遗言：仅首夜死者有遗言（白天被自爆打断时没有遗言）
+        if deaths and st.day == 1 and st.config.first_night_last_words and allow_last_words:
             st.phase = "LAST_WORDS"
             for seat in sorted(deaths):
                 self._after_death(seat, allow_last_words=True, allow_hunter=True)
@@ -737,13 +750,25 @@ class Engine:
         while st.winner is None and st.day < st.config.max_days:
             st.day += 1
             self.run_night()
-            if not self.run_dawn():
-                break
-            try:
-                if st.day == 1:
+            self.announce_daybreak()
+
+            # 第一天：先竞选警长，此时全场都还不知道昨晚谁死了
+            interrupted = False
+            if st.day == 1 and st.config.sheriff:
+                try:
                     self.run_sheriff_election()
-                    if st.check_winner():
-                        break
+                except DayInterrupted:
+                    # 警上有人自爆：竞选作废，白天到此为止。
+                    # 但昨晚的死亡是既成事实，仍然要结算和公布。
+                    interrupted = True
+
+            # 警徽发完了，现在才公布昨晚的死讯
+            if not self.run_dawn(allow_last_words=not interrupted):
+                break
+            if interrupted:
+                continue  # 自爆已经终结这个白天，跳过发言和投票
+
+            try:
                 self.run_day_speeches()
                 self.run_day_vote()
             except DayInterrupted:

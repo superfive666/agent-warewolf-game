@@ -1,0 +1,44 @@
+# 前端：nginx 静态托管 web/dist，/api/* 反代到编排端的 Service。
+# 编排端镜像自己也能托管前端；要把前端单独扩容 / 挂 CDN / 单独发版时才需要这一份。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: werewolf-web
+  namespace: werewolf
+spec:
+  replicas: 2          # 纯静态，随便扩
+  selector:
+    matchLabels: {app: werewolf-web}
+  template:
+    metadata:
+      labels: {app: werewolf-web}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: web
+          image: werewolf-web:latest
+          ports: [{containerPort: 8080}]
+          env:
+            # nginx 的 resolver 不走 search 域，必须写全限定域名
+            - name: API_UPSTREAM
+              value: "http://werewolf.werewolf.svc.cluster.local:80"
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: "50m", memory: "32Mi"}
+            limits:   {cpu: "500m", memory: "128Mi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: werewolf-web
+  namespace: werewolf
+spec:
+  selector: {app: werewolf-web}
+  ports: [{port: 80, targetPort: 8080}]

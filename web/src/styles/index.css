@@ -1,0 +1,285 @@
+/*
+ * 全局样式入口。
+ *
+ * 视觉规范（城堡夜色：午夜深蓝 + 烛金）已经定稿，这里只把它翻译成 Tailwind 的
+ * design tokens。组件里只用这些 token（bg-card / text-gold-hi / border-line …），
+ * 不要在组件里写十六进制颜色。
+ */
+@import 'tailwindcss';
+
+/* 断点沿用原设计：桌面优先，用 max-* 往下收。
+   max-laptop: ≤1180px   max-tablet: ≤960px   max-phone: ≤640px */
+@custom-variant max-laptop (@media (max-width: 1180px));
+@custom-variant max-tablet (@media (max-width: 960px));
+@custom-variant max-phone (@media (max-width: 640px));
+
+@theme {
+  /* ── 表面 ── */
+  --color-night: #0c1530; /* 顶栏 / 底部条 */
+  --color-page: #0f1a36; /* 页面 */
+  --color-hero: #111d3f;
+  --color-card: #15224a; /* 卡片 */
+  --color-raised: #1c2c5c; /* 选中 / 气泡 */
+  --color-inset: #0b142c; /* 输入框 */
+  --color-table: #121e42; /* 圆桌卡片 */
+  --color-banner: #121f46; /* 复盘结果横幅 */
+  --color-disc: #16234c; /* 座位圆片 */
+  --color-well: #1b2340; /* 桌心图标 / 时间线圆点 */
+  --color-sys: #1b2a55; /* 系统消息 */
+  --color-switch: #2a3662;
+
+  /* ── 线 ── */
+  --color-line: #2a3b70;
+  --color-line-soft: #1e2c58;
+  --color-rule: #243463; /* 分隔线 */
+  --color-line-strong: #3a4a80;
+  --color-seat-ring: #4a5e96;
+  --color-seat-dead: #4a5a8f;
+
+  /* ── 烛金 ── */
+  --color-gold: #d6b25e;
+  --color-gold-hi: #f0d48a;
+  --color-gold-soft: #e3cd97;
+  --color-gold-line: #6b5a30;
+  --color-gold-dark: #3a3522;
+  --color-gold-bg: #231f2a;
+  --color-medal: #a8843a;
+  --color-on-gold: #1a1405; /* 金底上的文字 */
+  --color-notice: #2a2517;
+  --color-notice-fg: #ebd9a6;
+  --color-notice-code: #1a170e;
+  --color-god-bg: #1e1e2a;
+  --color-active-disc: #2a2a38;
+
+  /* ── 文字 ── */
+  --color-fg: #f1e8d4; /* 羊皮纸 */
+  --color-dim: #a7b0cc;
+  --color-faint: #8c97ba;
+
+  /* ── 阵营 / 频道 ── */
+  --color-wolf: #e0735e;
+  --color-wolf-fg: #f09a86;
+  --color-wolf-bg: #3a2027;
+  --color-wolf-line: #7a3b34;
+  --color-wolf-soft: #f3c9bf;
+  --color-wolfchat-bg: #2a1c26;
+  --color-wolfchat-line: #5a2e2e;
+  --color-wolfchat-fg: #e8c6bd;
+  --color-good: #5e82be;
+  --color-good-fg: #a9c8f0;
+  --color-good-bg: #1a2e57;
+  --color-good-line: #3b5a93;
+  --color-vil-fg: #c9d0e4;
+  --color-vil-bg: #1c2645;
+  --color-vil-line: #36446f;
+  --color-priv-fg: #c7b3f2;
+  --color-priv-bg: #231e3f;
+  --color-priv-line: #45397a;
+  --color-priv-chip: #5b4a8e;
+  --color-priv-soft: #dcd2f2;
+  --color-ok-fg: #9fe0c8;
+  --color-ok-bg: #183a3a;
+  --color-ok-line: #2f6b60;
+
+  /* ── 字体 ── */
+  --font-serif: 'Noto Serif SC', 'Songti SC', serif;
+  --font-sans: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-latin: Cinzel, 'Times New Roman', serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ── 字号：按像素命名（text-13 = 13px），只设字号不改行高 ── */
+  --text-*: initial;
+  --text-11: 11px;
+  --text-12: 12px;
+  --text-12_5: 12.5px;
+  --text-13: 13px;
+  --text-13_5: 13.5px;
+  --text-14: 14px;
+  --text-14_5: 14.5px;
+  --text-15: 15px;
+  --text-16: 16px;
+  --text-17: 17px;
+  --text-18: 18px;
+  --text-19: 19px;
+  --text-20: 20px;
+  --text-21: 21px;
+  --text-22: 22px;
+  --text-24: 24px;
+  --text-25: 25px;
+  --text-26: 26px;
+  --text-32: 32px;
+  --text-44: 44px;
+  --text-46: 46px;
+
+  /* ── 动画 ── */
+  --animate-pulse-soft: pulse-soft 1.6s infinite;
+  --animate-blink: blink 1.2s infinite;
+
+  @keyframes pulse-soft {
+    50% {
+      opacity: 0.4;
+    }
+  }
+  @keyframes blink {
+    0%,
+    100% {
+      opacity: 0.25;
+    }
+    40% {
+      opacity: 1;
+    }
+  }
+}
+
+/* 页面左右留白：桌面 64 → 平板 32 → 手机 16 */
+@theme inline {
+  --spacing-gutter: var(--gutter);
+}
+
+@layer base {
+  :root {
+    --gutter: 64px;
+    @variant max-laptop {
+      --gutter: 32px;
+    }
+    @variant max-phone {
+      --gutter: 16px;
+    }
+  }
+  html {
+    background: var(--color-page);
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--color-page);
+    color: var(--color-fg);
+    font: 15px/1.6 var(--font-sans);
+    @variant max-phone {
+      font-size: 14px;
+    }
+  }
+  button,
+  select,
+  input {
+    font: inherit;
+    color: inherit;
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  a {
+    color: var(--color-gold-hi);
+  }
+  h1,
+  h2 {
+    font-family: var(--font-serif);
+    margin: 0;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-gold-hi);
+    outline-offset: 2px;
+  }
+  pre {
+    margin: 0;
+  }
+  input::placeholder {
+    color: var(--color-faint);
+  }
+}
+
+/* ───────── 少量不适合写成 utility 串的原语 ───────── */
+
+/* 描边图标 */
+@utility icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 输入框 / 下拉框 */
+@utility form-control {
+  height: 42px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 12px;
+  border-radius: 10px;
+  background-color: var(--color-inset);
+  border: 1px solid var(--color-line);
+  color: var(--color-fg);
+  font-size: 14px;
+  &:focus {
+    border-color: var(--color-gold);
+    outline: none;
+  }
+  &:disabled {
+    opacity: 0.5;
+  }
+}
+
+/* 下拉框的箭头 */
+@utility select-chevron {
+  appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23A7B0CC' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px;
+}
+
+/* 已出局座位上的红叉 */
+@utility dead-cross {
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    clip-path: inset(22%);
+    background:
+      linear-gradient(
+        45deg,
+        transparent calc(50% - 1.2px),
+        var(--color-wolf) calc(50% - 1.2px),
+        var(--color-wolf) calc(50% + 1.2px),
+        transparent calc(50% + 1.2px)
+      ),
+      linear-gradient(
+        -45deg,
+        transparent calc(50% - 1.2px),
+        var(--color-wolf) calc(50% - 1.2px),
+        var(--color-wolf) calc(50% + 1.2px),
+        transparent calc(50% + 1.2px)
+      );
+  }
+}
+
+/* 隐藏横向滚动条（筛选条 / 标签页） */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* <details> 默认的小三角 */
+@utility no-marker {
+  list-style: none;
+  &::-webkit-details-marker {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

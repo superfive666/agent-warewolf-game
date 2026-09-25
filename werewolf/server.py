@@ -1,6 +1,13 @@
-"""沙箱 Web 服务：配置 → 开局 → 自动跑 → 复盘。只用标准库，不需要任何前端构建。
+"""沙箱 Web 服务：配置 → 开局 → 自动跑 → 复盘。只用标准库。
 
   python3 run_server.py            # 然后打开 http://127.0.0.1:8000
+
+前端是 web/ 下的 Vite 工程，构建产物在 web/dist/：
+
+  cd web && npm ci && npm run build
+
+构建过就由这里一起托管（同源，不需要反代）；也可以单独用 nginx 镜像部署前端，
+这时本服务只提供 /api/*。前端和 API 不同源时，用 WEREWOLF_CORS_ORIGINS 放行。
 """
 from __future__ import annotations
 
@@ -35,7 +42,21 @@ DEFAULT_DEPLOYMENT = os.environ.get("WEREWOLF_DEPLOYMENT", "inprocess")
 AGENT_IMAGE = os.environ.get("WEREWOLF_AGENT_IMAGE", "werewolf-agent:latest")
 STORE = open_store(STORE_URI)
 
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+#: 前端构建产物目录（web/dist）。可用 WEREWOLF_WEB_DIR 指到别处。
+WEB_DIR = Path(os.environ.get("WEREWOLF_WEB_DIR")
+               or Path(__file__).resolve().parent.parent / "web" / "dist").resolve()
+#: 允许跨域访问 /api 的来源，逗号分隔；"*" = 任意来源。默认不放行（同源部署用不到）。
+CORS_ORIGINS = {o.strip() for o in os.environ.get("WEREWOLF_CORS_ORIGINS", "").split(",") if o.strip()}
+
+_NO_FRONTEND = """<!doctype html><meta charset="utf-8"><title>狼人杀 Agent 沙箱</title>
+<body style="font:15px/1.7 system-ui;background:#0F1A36;color:#F1E8D4;padding:48px">
+<h1>前端还没有构建</h1>
+<p>API 已经在跑了。前端二选一：</p>
+<pre style="background:#0B142C;padding:16px;border-radius:10px">cd web
+npm ci
+npm run build     # 构建到 web/dist，刷新本页即可
+npm run dev       # 或者：开发模式 http://127.0.0.1:5173（/api 自动代理到这里）</pre>
+</body>"""
 
 
 class GameRunner:
@@ -432,16 +453,34 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _file(self, path: Path) -> None:
-        if not path.is_file():
+    def end_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and ("*" in CORS_ORIGINS or origin in CORS_ORIGINS):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        super().end_headers()
+
+    def _static(self, url_path: str) -> None:
+        """托管 web/dist 里的前端构建产物。"""
+        index = WEB_DIR / "index.html"
+        if not index.is_file():
+            return self._text(_NO_FRONTEND, "text/html; charset=utf-8")
+        rel = url_path.lstrip("/") or "index.html"
+        path = (WEB_DIR / rel).resolve()
+        if not path.is_relative_to(WEB_DIR) or not path.is_file():
+            # 前端用 hash 路由，这里只剩真正不存在的文件
             return self._json({"error": "not found"}, 404)
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        if ctype.startswith("text/") or ctype == "application/javascript":
+        if ctype.startswith("text/") or ctype in ("application/javascript", "application/json",
+                                                   "image/svg+xml"):
             ctype += "; charset=utf-8"
         body = path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # 带 hash 的静态资源可以永久缓存；index.html 每次都要拿最新的
+        immutable = path.parent.name == "assets"
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable" if immutable else "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
@@ -458,10 +497,8 @@ class Handler(BaseHTTPRequestHandler):
         god = q.get("god", ["0"])[0] in ("1", "true")
         parts = [p for p in u.path.split("/") if p]
 
-        if u.path in ("/", "/index.html"):
-            return self._file(WEB_DIR / "index.html")
-        if parts and parts[0] == "static":
-            return self._file(WEB_DIR / Path(*parts[1:]))
+        if not parts or parts[0] != "api":
+            return self._static(u.path)
 
         if u.path == "/api/options":
             return self._json({
@@ -552,6 +589,14 @@ class Handler(BaseHTTPRequestHandler):
         if tail == "views":
             return self._json({"error": "历史对局不保留逐座位视角，请看复盘"}, 404)
         return self._json({"error": "not found"}, 404)
+
+    def do_OPTIONS(self) -> None:  # CORS 预检
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self) -> None:
         u = urlparse(self.path)

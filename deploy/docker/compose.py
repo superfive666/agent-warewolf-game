@@ -15,7 +15,8 @@ import json
 import sys
 
 
-def render(n: int, backend: str, model: str, effort: str, image: str) -> str:
+def render(n: int, backend: str, model: str, effort: str, image: str,
+           web_image: str = "werewolf-web:latest") -> str:
     lines = ["# 由 deploy/docker/compose.py 生成", "services:"]
     for seat in range(1, n + 1):
         lines += [
@@ -51,6 +52,14 @@ def render(n: int, backend: str, model: str, effort: str, image: str) -> str:
         "    volumes: [\"store:/data\"]",
         "    networks: [wolf]",
         f"    depends_on: [{', '.join(f'agent-{s:02d}' for s in range(1, n + 1))}]",
+        # 前端：nginx 静态托管，/api 反代到编排端。编排端 8000 端口本身也能打开页面
+        "  web:",
+        f"    image: {web_image}",
+        "    environment:",
+        "      API_UPSTREAM: \"http://orchestrator:8000\"",
+        "    ports: [\"8080:8080\"]",
+        "    networks: [wolf]",
+        "    depends_on: [orchestrator]",
         "",
         "networks:",
         "  wolf: {driver: bridge}",
@@ -70,5 +79,6 @@ if __name__ == "__main__":
     ap.add_argument("--model", default="claude-opus-5")
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--image", default="werewolf-agent:latest")
+    ap.add_argument("--web-image", default="werewolf-web:latest")
     a = ap.parse_args()
-    sys.stdout.write(render(a.n_players, a.backend, a.model, a.effort, a.image))
+    sys.stdout.write(render(a.n_players, a.backend, a.model, a.effort, a.image, a.web_image))

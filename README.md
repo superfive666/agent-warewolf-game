@@ -4,10 +4,12 @@
 整局自动跑完 → 输出一份含每个 agent 心路历程的详细复盘。**
 
 ```bash
-uv run werewolf-server     # 打开 http://127.0.0.1:8000
+(cd web && npm ci && npm run build)   # 构建前端（Node 20.19+）
+uv run werewolf-server                # 打开 http://127.0.0.1:8000
 ```
 
-**核心零第三方依赖**（规则 bot、引擎、网页沙箱、SQLite 会话库全部只用标准库）。
+**后端核心零第三方依赖**（规则 bot、引擎、网页沙箱、SQLite 会话库全部只用标准库）。
+前端是 `web/` 下的 Vite + React + TypeScript + Tailwind CSS 工程，详见 [`web/README.md`](web/README.md)。
 要接真模型再按需装：`uv sync --extra claude` / `--extra openai`。
 
 支持四种部署：同进程 / 每座位一个进程 / 每座位一个 Docker 容器 / 每座位一个 k8s Pod。
@@ -35,8 +37,12 @@ uv run werewolf-server     # 打开 http://127.0.0.1:8000
 ### 网页沙箱（推荐）
 
 ```bash
-uv run werewolf-server                # → http://127.0.0.1:8000
+(cd web && npm ci && npm run build)   # 第一次先构建前端，产物在 web/dist/
+uv run werewolf-server                # → http://127.0.0.1:8000（同时托管 web/dist）
 uv run werewolf-server --port 9000    # 换端口
+
+# 改前端时用开发模式（热更新，/api 自动代理到 :8000）
+cd web && npm run dev                 # → http://127.0.0.1:5173
 ```
 
 1. 选人数（6/8/9/10/12）
@@ -257,10 +263,13 @@ runs/<时间戳>/
 ```
 run_server.py         Web 沙箱入口
 run_game.py           命令行入口
-web/                  前端（零构建：index.html + app.css + app.js）
+web/                  前端：Vite + React + TypeScript + Tailwind CSS（见 web/README.md）
+├── src/              api / features（setup·live·review·history）/ components / hooks / lib
+├── Dockerfile        前端镜像：Node 构建 → nginx 静态托管
+└── .claude/skills/   前端开发规范（组件分层、Tailwind 用法、状态与数据、测试、提交前检查、部署）
 deploy/
-├── docker/           Dockerfile + compose 生成器
-└── k8s/              Namespace / RBAC / 编排端 Deployment
+├── docker/           Dockerfile（编排端 + agent，内置前端产物）+ compose 生成器
+└── k8s/              Namespace / RBAC / 编排端 Deployment / 前端 Deployment
 werewolf/
 ├── roles.py          角色 / 阵营 / 5 种板子
 ├── events.py         ★ 事件 + 可见性模型（信息隔离的全部实现）
@@ -299,7 +308,8 @@ uv sync --extra all          # 全都要
 
 | 部分 | 需要装什么 |
 |---|---|
-| 规则 bot、引擎、网页沙箱、SQLite 会话库 | **什么都不用装**，只要 Python 3.11+（前端也没有构建步骤） |
+| 规则 bot、引擎、网页沙箱、SQLite 会话库 | **什么都不用装**，只要 Python 3.11+ |
+| 网页前端 | Node 20.19+，`cd web && npm ci && npm run build`（或直接用 Docker 镜像，里面已经构建好） |
 | Claude 后端 | `--extra claude`，并设 `ANTHROPIC_API_KEY` |
 | OpenAI / 兼容网关后端 | `--extra openai`；密钥用 `--api-key` 直接给，或设 `OPENAI_API_KEY` |
 | k8s 部署 | `--extra k8s` |

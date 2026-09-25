@@ -150,7 +150,9 @@ class TestApiCarriesChinese(unittest.TestCase):
         """前端必须读 _cn 字段，而不是自己拼英文。"""
         from pathlib import Path
 
-        js = Path("web/app.js").read_text(encoding="utf-8")
+        src = Path(__file__).resolve().parent.parent / "web" / "src"
+        js = "\n".join(p.read_text(encoding="utf-8")
+                        for p in src.rglob("*.ts*") if "__tests__" not in p.parts)
         for expected in ("phase_cn", "claim_cn", "action_cn", "action_desc",
                          "release_reason_cn", "died_cause_cn"):
             self.assertIn(expected, js, f"前端没用 {expected}")

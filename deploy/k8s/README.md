@@ -6,6 +6,9 @@
 # 1. 建镜像并推到集群能拉到的仓库
 docker build -t <registry>/werewolf-agent:latest -f deploy/docker/Dockerfile .
 docker push <registry>/werewolf-agent:latest
+# （可选）前端单独一个 nginx 镜像
+docker build -t <registry>/werewolf-web:latest web/
+docker push <registry>/werewolf-web:latest
 
 # 2. API key（LLM 后端需要）
 kubectl -n werewolf create secret generic anthropic --from-literal=api-key=sk-ant-...
@@ -13,9 +16,11 @@ kubectl -n werewolf create secret generic anthropic --from-literal=api-key=sk-an
 # 3. 部署
 kubectl apply -f deploy/k8s/00-namespace-rbac.yaml
 kubectl apply -f deploy/k8s/10-orchestrator.yaml
+kubectl apply -f deploy/k8s/20-web.yaml        # 可选：前端单独部署
 
-# 4. 访问
+# 4. 访问（编排端自带前端；两个都能打开页面）
 kubectl -n werewolf port-forward svc/werewolf 8000:80
+kubectl -n werewolf port-forward svc/werewolf-web 8080:80
 ```
 
 ## 每个座位的生命周期

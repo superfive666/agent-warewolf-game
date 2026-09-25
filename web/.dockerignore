@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+.claude
+*.local
+.env*
+!.env.example
+Dockerfile
+.dockerignore

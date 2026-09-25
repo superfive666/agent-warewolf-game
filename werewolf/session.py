@@ -50,7 +50,11 @@ class GameSession:
                 on_event=on_event, view_recorder=view_recorder,
                 store=self.store, game_id=self.id, pool=self.pool,
             )
-            return self.engine.run()
+            state = self.engine.run()
+            # 引擎自己落库时不知道阵容；这里带上 lineup 再落一次，历史对局才有每个座位的 agent
+            self.store.finish_game(self.id, {
+                **result_summary(self.state, self.lineup), "status": "finished"})
+            return state
         except BaseException as exc:
             # 崩了也要把已经拿到的会话存下来，再把容器收干净
             self.pool.release_all("aborted")

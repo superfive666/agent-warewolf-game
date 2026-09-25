@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 from . import actions as A
+from . import i18n
 from .agents.base import Agent
 from .events import Audience
 from .roles import Faction, Role
@@ -96,7 +97,8 @@ class Engine:
                                      action=None, accepted=False, error=error)
                 self.emit(
                     type="invalid_action", audience=Audience.GOD, actor=seat,
-                    text=f"{seat}号的 {action_type} 动作非法（第{attempt + 1}/{self.max_iterations}次）：{error}",
+                    text=f"{seat}号的「{i18n.action_cn(action_type)}」动作非法"
+                 f"（第{attempt + 1}/{self.max_iterations}次）：{error}",
                     payload={"action_type": action_type, "error": error},
                 )
                 continue
@@ -119,7 +121,9 @@ class Engine:
         fallback = A.default_action(st, seat, action_type, ctx)
         self.emit(
             type="fallback_action", audience=Audience.GOD, actor=seat,
-            text=f"{seat}号用尽 {self.max_iterations} 次迭代，使用安全默认动作：{fallback}",
+            text=f"{seat}号用尽 {self.max_iterations} 次迭代，"
+                 f"「{i18n.action_cn(action_type)}」改用安全默认动作："
+                 f"{i18n.describe_action(action_type, fallback) or '无'}",
             payload={"action_type": action_type, "action": fallback},
         )
         self._last_seen[seat] = len(st.event_log)
@@ -138,9 +142,12 @@ class Engine:
             "role": st.players[seat].role.value,
             "role_cn": st.players[seat].role.cn,
             "action_type": action_type,
+            "action_cn": i18n.action_cn(action_type),
+            "phase_cn": i18n.phase_cn(st.phase),
             "attempt": attempt + 1,
             "thought": thought or "",
             "action": action,
+            "action_desc": i18n.describe_action(action_type, action),
             "accepted": accepted,
             "error": error,
         }
@@ -218,7 +225,8 @@ class Engine:
                  f"直接进入黑夜。{badge_note}",
             payload={"seat": seat, "phase": st.phase},
         )
-        st.explode_log.append({"day": st.day, "seat": seat, "phase": st.phase})
+        st.explode_log.append({"day": st.day, "seat": seat, "phase": st.phase,
+                               "phase_cn": i18n.phase_cn(st.phase)})
         self.kill(seat, when="explode", cause="exploded")
 
     # ---------------- 死亡与结算 ----------------
@@ -238,7 +246,7 @@ class Engine:
         )
         self.emit(
             type="death", audience=Audience.GOD, targets=[seat],
-            text=f"{seat}号（{p.role.cn}）死亡，原因：{cause}",
+            text=f"{seat}号（{p.role.cn}）死亡，原因：{i18n.cause_cn(cause)}",
             payload={"seat": seat, "cause": cause, "role": p.role.value},
         )
 

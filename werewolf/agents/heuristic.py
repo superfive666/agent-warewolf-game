@@ -12,6 +12,7 @@ from __future__ import annotations
 import random
 from collections import defaultdict
 
+from ..i18n import position_cn, role_cn, seats_cn
 from ..roles import Role
 from ..views import PlayerView
 
@@ -66,7 +67,8 @@ class HeuristicAgent:
                     ) + "。"
                 )
             if wt.intel["suspected_god_seats"]:
-                bits.append(f"疑似神职：{wt.intel['suspected_god_seats']}，屠边优先照顾他们。")
+                bits.append(f"疑似神职：{seats_cn(wt.intel['suspected_god_seats'])}，"
+                            "屠边优先照顾他们。")
         elif self.believed_seer is not None:
             bits.append(
                 f"我选择相信 {self.believed_seer}号 是真预言家"
@@ -80,7 +82,9 @@ class HeuristicAgent:
 
     def _explain_action(self, view: PlayerView, at: str, out: dict) -> str:
         if at == "wolf_chat":
-            return f"我建议今晚刀 {out['kill_suggestion']}号。"
+            pos = out.get("my_position")
+            return (f"我打{position_cn(pos)}，" if pos else "") + \
+                   f"建议今晚刀 {out['kill_suggestion']}号。"
         if at == "wolf_kill":
             return f"我投票刀 {out['target']}号。" if out["target"] else "我投空刀。"
         if at == "seer_check":
@@ -96,9 +100,11 @@ class HeuristicAgent:
             if out.get("explode"):
                 return "局势太差了，我选择自爆打断白天，给队友争取一晚。"
             claim = out.get("claim")
-            c = f"我公开跳{Role(claim).cn}。" if claim else "我不起跳。"
+            c = f"我公开跳{role_cn(claim)}。" if claim else "我不起跳。"
+            if out.get("badge_flow"):
+                c += f"警徽流报 {seats_cn(out['badge_flow'])}。"
             if out.get("suspects"):
-                c += f"我指认 {out['suspects']}。"
+                c += f"我指认 {seats_cn(out['suspects'])}。"
             return c
         if at == "vote":
             return f"我投 {out['target']}号。" if out["target"] else "我弃票。"

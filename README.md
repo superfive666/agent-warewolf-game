@@ -4,10 +4,11 @@
 整局自动跑完 → 输出一份含每个 agent 心路历程的详细复盘。**
 
 ```bash
-python3 run_server.py      # 打开 http://127.0.0.1:8000
+uv run werewolf-server     # 打开 http://127.0.0.1:8000
 ```
 
-零依赖即可运行（内置规则 bot）；想让真正的 Claude 来打，再装 `anthropic` 并配 API key。
+**核心零第三方依赖**（规则 bot、引擎、网页沙箱、SQLite 会话库全部只用标准库）。
+要接真模型再按需装：`uv sync --extra claude` / `--extra openai`。
 
 支持四种部署：同进程 / 每座位一个进程 / 每座位一个 Docker 容器 / 每座位一个 k8s Pod。
 **玩家离场（被刀、被票、自爆）立刻销毁容器，但会话在销毁之前就已入库，永远留得住。**
@@ -34,8 +35,8 @@ python3 run_server.py      # 打开 http://127.0.0.1:8000
 ### 网页沙箱（推荐）
 
 ```bash
-python3 run_server.py                 # → http://127.0.0.1:8000
-python3 run_server.py --port 9000     # 换端口
+uv run werewolf-server                # → http://127.0.0.1:8000
+uv run werewolf-server --port 9000    # 换端口
 ```
 
 1. 选人数（6/8/9/10/12）
@@ -49,23 +50,23 @@ python3 run_server.py --port 9000     # 换端口
 ### 命令行
 
 ```bash
-python3 run_game.py                        # 12 个规则 bot 打一局
-python3 run_game.py -n 9 --seed 3          # 9 人局，固定牌型
-python3 run_game.py --show-wolves          # 开上帝视角看狼人频道
-python3 run_game.py --games 200            # 跑 200 局统计胜率
-python3 run_game.py --no-explode           # 禁止自爆
-python3 run_game.py --max-speech-chars 300 # 发言限制更短
+uv run werewolf                            # 12 个规则 bot 打一局
+uv run werewolf -n 9 --seed 3              # 9 人局，固定牌型
+uv run werewolf --show-wolves              # 开上帝视角看狼人频道
+uv run werewolf --games 200                # 跑 200 局统计胜率
+uv run werewolf --no-explode               # 禁止自爆
+uv run werewolf --max-speech-chars 300     # 发言限制更短
 
 # 真 LLM —— Claude
-pip install -r requirements-llm.txt && export ANTHROPIC_API_KEY=...
-python3 run_game.py --backend claude --show-thoughts
+uv sync --extra claude && export ANTHROPIC_API_KEY=...
+uv run werewolf --backend claude --show-thoughts
 
 # 真 LLM —— OpenAI 或挂自己的 provider（base_url + model + api_key 三件套）
-pip install -r requirements-openai.txt
-python3 run_game.py --backend openai \
+uv sync --extra openai
+uv run werewolf --backend openai \
     --base-url https://my-gateway/v1 --model my-provider/llama-3-70b --api-key sk-xxx
 
-python3 run_game.py --backend openai --llm-seats 1,2,3   # 3 个 LLM + 9 个 bot，先小成本试
+uv run werewolf --backend openai --llm-seats 1,2,3   # 3 个 LLM + 9 个 bot，先小成本试
 
 # 测试
 python3 -m unittest discover -s tests -t .
@@ -284,8 +285,22 @@ werewolf/
 
 ## 依赖
 
-- **规则 bot + 网页沙箱**：只需要 Python 3.11+，**零第三方依赖**（前端也没有构建步骤）
-- **Claude 后端**：`pip install -r requirements-llm.txt`，并设置 `ANTHROPIC_API_KEY`
-- **OpenAI / 兼容网关后端**：`pip install -r requirements-openai.txt`；密钥用 `--api-key` 直接给，或设 `OPENAI_API_KEY`
-- **k8s 部署**：`pip install -r requirements-k8s.txt`（官方 kubernetes SDK）
-- **会话存储**：SQLite 走标准库 `sqlite3`，不需要装任何东西
+依赖由 [uv](https://docs.astral.sh/uv/) 管理，全部写在 `pyproject.toml` 里，`uv.lock` 锁版本。
+
+```bash
+uv sync                      # 核心（零第三方依赖）
+uv sync --extra claude       # + Anthropic SDK
+uv sync --extra openai       # + OpenAI SDK
+uv sync --extra k8s          # + kubernetes SDK
+uv sync --extra all          # 全都要
+```
+
+| 部分 | 需要装什么 |
+|---|---|
+| 规则 bot、引擎、网页沙箱、SQLite 会话库 | **什么都不用装**，只要 Python 3.11+（前端也没有构建步骤） |
+| Claude 后端 | `--extra claude`，并设 `ANTHROPIC_API_KEY` |
+| OpenAI / 兼容网关后端 | `--extra openai`；密钥用 `--api-key` 直接给，或设 `OPENAI_API_KEY` |
+| k8s 部署 | `--extra k8s` |
+
+装好之后有三个命令：`werewolf`（命令行对局）、`werewolf-server`（网页沙箱）、
+`werewolf-agent`（容器里的单座位 agent）。

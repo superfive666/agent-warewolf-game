@@ -26,7 +26,7 @@ spec:
       containers:
         - name: orchestrator
           image: werewolf-agent:latest
-          command: ["python3", "run_server.py", "--host", "0.0.0.0"]
+          command: ["werewolf-server", "--host", "0.0.0.0"]
           ports: [{containerPort: 8000}]
           env:
             - name: WEREWOLF_DEPLOYMENT

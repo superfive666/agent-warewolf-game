@@ -21,7 +21,7 @@ def load_k8s():
         from kubernetes import client, config
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "k8s 部署需要官方 SDK：pip install kubernetes"
+            "k8s 部署需要官方 SDK：uv sync --extra k8s"
         ) from exc
     try:
         config.load_incluster_config()
@@ -109,7 +109,7 @@ class K8sRuntime(HttpRuntime):
                 containers=[c.V1Container(
                     name="agent",
                     image=self.image,
-                    command=["python3", "-m", "werewolf.agent_server"],
+                    command=["werewolf-agent"],
                     ports=[c.V1ContainerPort(container_port=8100)],
                     env=env,
                     resources=c.V1ResourceRequirements(

@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from . import i18n
 from .roles import Role
 from .views import PlayerView
 
@@ -177,7 +178,7 @@ def system_prompt(view: PlayerView) -> str:
 def _fmt_public_state(view: PlayerView) -> str:
     ps = view.public_state
     lines = [
-        f"第 {ps['day']} 天 / 阶段 {ps['phase']}",
+        f"第 {ps['day']} 天 · {i18n.phase_cn(ps['phase'])}",
         f"存活：{' '.join(str(s) + '号' for s in ps['alive_seats'])}",
     ]
     if ps["dead_seats"]:
@@ -188,11 +189,8 @@ def _fmt_public_state(view: PlayerView) -> str:
                 for s in ps["dead_seats"] if s in deaths
             )
         )
-    lines.append(
-        "警长：" + (f"{ps['sheriff']}号" if ps["sheriff"] else {
-            "none": "尚未竞选", "lost": "警徽流失", "destroyed": "警徽已撕毁"
-        }.get(ps["sheriff_status"], "无"))
-    )
+    lines.append("警长：" + (f"{ps['sheriff']}号" if ps["sheriff"]
+                            else i18n.SHERIFF_STATUS_CN.get(ps["sheriff_status"], "无")))
     if ps["public_claims"]:
         lines.append("公开身份宣称（可能是假的）：" + "　".join(
             f"{s}号自称{Role(c['claim']).cn}" + (f"({c['detail']})" if c["detail"] else "")
@@ -200,7 +198,7 @@ def _fmt_public_state(view: PlayerView) -> str:
         ))
     if ps["public_check_claims"]:
         lines.append("公开宣称的验人结果：" + "　".join(
-            f"第{c['day']}天 {c['by']}号说 {c['target']}号是{'查杀' if c['result'] == 'WOLF' else '金水'}"
+            f"第{c['day']}天 {c['by']}号说 {c['target']}号是{i18n.check_cn(c['result'])}"
             for c in ps["public_check_claims"]
         ))
     if ps["revealed_roles"]:
@@ -236,7 +234,7 @@ def _fmt_speech_archive(view: PlayerView) -> str:
             tags.append(f"跳{Role(e['claim']).cn}")
         if e["claimed_check"]:
             c = e["claimed_check"]
-            tags.append(f"报{c['target']}号={'查杀' if c['result'] == 'WOLF' else '金水'}")
+            tags.append(f"报{c['target']}号={i18n.check_cn(c['result'])}")
         if e["badge_flow"]:
             tags.append("警徽流" + "".join(f"{t}号" for t in e["badge_flow"]))
         if e["suspects"]:
@@ -256,7 +254,8 @@ def _fmt_role_knowledge(view: PlayerView) -> str:
         if not rk["checks"]:
             return "你还没有查验过任何人。"
         return "你的验人记录：\n" + "\n".join(
-            f"  第{c['day']}夜 验 {c['target']}号 → 【{'狼人(查杀)' if c['result'] == 'WOLF' else '好人(金水)'}】"
+            f"  第{c['day']}夜 验 {c['target']}号 → 【{'狼人' if c['result'] == 'WOLF' else '好人'}"
+            f"({i18n.check_cn(c['result'])})】"
             for c in rk["checks"]
         ) + f"\n还没验过的存活玩家：{rk['unchecked_alive']}"
     if role is Role.WITCH:
@@ -317,10 +316,8 @@ def _fmt_wolf_team(view: PlayerView) -> str:
     lines.append(f"　　　{intel['edge_hint']}")
     assign = wt.strategy_board.get("assignments") or {}
     if assign:
-        from .actions import WOLF_POSITIONS
         lines.append("狼队白天分工：" + "　".join(
-            "{}号={}".format(k, WOLF_POSITIONS[v].split(" ")[0]) for k, v in sorted(assign.items())
-        ))
+            "{}号={}".format(k, i18n.position_cn(v)) for k, v in sorted(assign.items())))
     if wt.strategy_board.get("notes"):
         lines.append(f"狼队战术板：{wt.strategy_board['notes']}")
     recent = [c for c in wt.chat_log if c["day"] >= view.public_state["day"]]
@@ -382,7 +379,8 @@ def turn_prompt(view: PlayerView, *, full: bool = False, error: str | None = Non
         title = "全部经过" if full else "自你上次行动以来的新进展"
         blocks += ["", f"════════ {title} ════════"]
         blocks += [
-            ("  " if e["vis"] == "public" else "* ") + f"[第{e['day']}天 {e['phase']}] {e['text']}"
+            ("  " if e["vis"] == "public" else "* ")
+            + f"[第{e['day']}天 {e.get('phase_cn') or i18n.phase_cn(e['phase'])}] {e['text']}"
             for e in events
         ]
     blocks += ["", _fmt_legal_action(view)]

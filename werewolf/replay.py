@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
+from . import i18n
 from .events import Audience
 from .roles import Faction, Role, board_summary
 from .state import GameState
@@ -14,11 +15,7 @@ _AUD_MARK = {
     Audience.GOD: "👁",
 }
 
-_WHEN_CN = {"night": "夜里", "vote": "被投票", "shot": "被枪杀", "explode": "自爆"}
-_CAUSE_CN = {
-    "killed": "被狼刀", "poisoned": "被女巫毒", "exiled": "被放逐",
-    "shot": "被猎人枪杀", "exploded": "自爆",
-}
+_WHEN_CN, _CAUSE_CN = i18n.WHEN_CN, i18n.CAUSE_CN
 
 
 def _fate(p) -> str:
@@ -58,7 +55,8 @@ def render_replay(state: GameState, *, include_god: bool = True, lineup=None) ->
         pl = state.players[d["seat"]]
         if d["seat"] in exploded_seats:
             e = next(x for x in state.explode_log if x["seat"] == d["seat"])
-            L.append(f"- **第{d['day']}天** 💥 {d['seat']}号（狼人）在 {e['phase']} 阶段自爆，"
+            L.append(f"- **第{d['day']}天** 💥 {d['seat']}号（狼人）在「"
+                     f"{e.get('phase_cn') or i18n.phase_cn(e['phase'])}」阶段自爆，"
                      "当天发言和投票全部中止")
         else:
             L.append(f"- **第{d['day']}天** {d['seat']}号（{pl.role.cn}）"
@@ -66,7 +64,7 @@ def render_replay(state: GameState, *, include_god: bool = True, lineup=None) ->
     if state.sheriff_status == "elected" and state.sheriff_seat:
         L.append(f"- 警长：{state.sheriff_seat}号（{state.players[state.sheriff_seat].role.cn}）")
     elif state.sheriff_status in ("lost", "destroyed"):
-        L.append(f"- 警徽{'流失' if state.sheriff_status == 'lost' else '被销毁'}，本局无警长")
+        L.append(f"- {i18n.SHERIFF_STATUS_CN[state.sheriff_status]}，本局无警长")
     L.append("")
 
     # ---------- 神职操作 ----------
@@ -75,7 +73,7 @@ def render_replay(state: GameState, *, include_god: bool = True, lineup=None) ->
         L.append("**预言家验人**")
         for c in state.seer_checks:
             L.append(f"- 第{c['day']}夜 验 {c['target']}号 → "
-                     f"{'🔴 查杀' if c['result'] == 'WOLF' else '🟢 金水'}"
+                     f"{'🔴' if c['result'] == 'WOLF' else '🟢'} {i18n.check_cn(c['result'])}"
                      f"（实际是{state.players[c['target']].role.cn}）")
         L.append("")
     if state.witch_potion_log:
@@ -84,13 +82,22 @@ def render_replay(state: GameState, *, include_god: bool = True, lineup=None) ->
             L.append(f"- 第{x['day']}夜 {'解药救' if x['potion'] == 'antidote' else '毒杀'} "
                      f"{x['target']}号（{state.players[x['target']].role.cn}）")
         L.append("")
+    assign = state.wolf_strategy_board.get("assignments") or {}
+    if assign:
+        L.append("**狼队白天分工**")
+        L.append("- " + "　".join(
+            f"{k}号={i18n.position_cn(v)}" for k, v in sorted(assign.items())))
+        L.append("")
     if state.wolf_kill_history:
         L.append("**狼队刀人**")
-        outcome = {"died": "得手", "saved_by_witch": "被女巫解药救了", "empty_knife": "空刀", "pending": "—"}
+        outcome = {"died": "得手", "saved_by_witch": "被女巫解药救了",
+                   "empty_knife": "空刀", "pending": "—"}
         for k in state.wolf_kill_history:
             tgt = f"{k['decided']}号（{state.players[k['decided']].role.cn}）" if k["decided"] else "空刀"
+            votes = "、".join(f"{v}号投{t}号" if t else f"{v}号空刀"
+                              for v, t in k["votes"].items())
             L.append(f"- 第{k['day']}夜 刀 {tgt} → {outcome.get(k['outcome'], k['outcome'])}"
-                     f"　狼队内部票型 {k['votes']}")
+                     f"　（狼队内部：{votes}）")
         L.append("")
 
     # ---------- 投票 ----------
@@ -123,7 +130,7 @@ def render_replay(state: GameState, *, include_god: bool = True, lineup=None) ->
         if e.day != current_day:
             current_day = e.day
             L += ["", f"### 第 {current_day} 天" if current_day else "### 开局", ""]
-        L.append(f"`{_AUD_MARK[e.audience]}` **[{e.phase}]** {e.text}")
+        L.append(f"`{_AUD_MARK[e.audience]}` **[{i18n.phase_cn(e.phase)}]** {e.text}")
     L.append("")
 
     # ---------- 心路历程 ----------
@@ -142,10 +149,13 @@ def render_replay(state: GameState, *, include_god: bool = True, lineup=None) ->
             continue
         for t in entries:
             tag = "" if t["accepted"] else f"（第{t['attempt']}次尝试，被判非法：{t['error']}）"
-            L.append(f"- **第{t['day']}天 · {t['phase']} · {t['action_type']}**{tag}")
+            phase = t.get("phase_cn") or i18n.phase_cn(t["phase"])
+            act = t.get("action_cn") or i18n.action_cn(t["action_type"])
+            L.append(f"- **第{t['day']}天 · {phase} · {act}**{tag}")
             L.append(f"  > {t['thought']}")
-            if t["accepted"] and t["action"]:
-                L.append(f"  - → 实际动作：`{t['action']}`")
+            desc = t.get("action_desc") or i18n.describe_action(t["action_type"], t.get("action"))
+            if t["accepted"] and desc:
+                L.append(f"  - → 实际动作：{desc}")
     L.append("")
 
     # ---------- 统计 ----------

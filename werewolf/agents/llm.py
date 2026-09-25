@@ -4,7 +4,7 @@
 狼人之间的"串供"只能通过引擎写进狼队视角的那条通道进行，
 这在架构上杜绝了"LLM 无意中共享上下文"的泄密。
 
-需要 `pip install -r requirements-llm.txt`，并设置 ANTHROPIC_API_KEY（或 `ant auth login`）。
+需要 `uv sync --extra claude`，并设置 ANTHROPIC_API_KEY（或 `ant auth login`）。
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class LLMAgent(ChatAgent):
                 import anthropic
             except ImportError as exc:  # pragma: no cover
                 raise RuntimeError(
-                    "Claude 后端需要 SDK：pip install -r requirements-llm.txt"
+                    "Claude 后端需要 SDK：uv sync --extra claude"
                 ) from exc
             key = self._api_key or os.environ.get(self.api_key_env)
             # 没显式给 key 时交给 SDK 自己解析（环境变量 / ant auth login 的 profile）

@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import i18n
 from .events import Audience
 from .lineup import AVAILABLE_BACKENDS, AVAILABLE_MODELS, EFFORT_LEVELS, Lineup
 from .replay import render_replay, result_summary
@@ -112,12 +113,14 @@ class GameRunner:
                 "revealed_role": p.revealed_role.value if p.revealed_role else None,
                 "revealed_role_cn": p.revealed_role.cn if p.revealed_role else None,
                 "died_day": p.died_day, "died_cause": p.died_cause,
+                "died_cause_cn": i18n.cause_cn(p.died_cause),
                 "agent": self.lineup.specs[s].label,
                 "released": self.session.pool.runtimes[s].released,
                 # 真实身份只在结束后或开了上帝视角时给
                 "role": p.role.value if (finished or god) else None,
                 "role_cn": p.role.cn if (finished or god) else None,
                 "claim": st.public_claims.get(s, {}).get("claim"),
+                "claim_cn": i18n.role_cn(st.public_claims.get(s, {}).get("claim")),
             })
         return {
             "id": self.id,
@@ -132,10 +135,14 @@ class GameRunner:
                 s for s, rt in self.session.pool.runtimes.items() if rt.released),
             "day": st.day,
             "phase": st.phase,
-            "current": self.current,
+            "phase_cn": i18n.phase_cn(st.phase),
+            "current": {**self.current,
+                        "phase_cn": i18n.phase_cn(self.current.get("phase")),
+                        "action_cn": i18n.action_cn(self.current.get("action_type"))},
             "players": players,
             "sheriff": st.sheriff_seat,
             "sheriff_status": st.sheriff_status,
+            "sheriff_status_cn": i18n.SHERIFF_STATUS_CN.get(st.sheriff_status, ""),
             "total_events": len(self._events),
             "winner": st.winner.value if st.winner else None,
             "winner_cn": st.winner.cn if st.winner else None,
@@ -148,7 +155,13 @@ class GameRunner:
 
     def agent_sessions(self) -> list[dict]:
         """每个座位的 agent 会话 —— 容器被销毁之前抓下来的那一份。"""
-        return STORE.load_agent_sessions(self.id)
+        out = []
+        for x in STORE.load_agent_sessions(self.id):
+            out.append({**x,
+                        "role_cn": i18n.role_cn(x.get("role")),
+                        "backend_cn": i18n.BACKEND_CN.get(x.get("backend"), x.get("backend")),
+                        "release_reason_cn": i18n.release_cn(x.get("release_reason"))})
+        return out
 
 
 class _Stopped(Exception):
@@ -321,6 +334,18 @@ class Handler(BaseHTTPRequestHandler):
             g.stop()
             return self._json({"ok": True, "status": g.status})
         return self._json({"error": "not found"}, 404)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`werewolf-server` 入口。"""
+    import argparse
+
+    ap = argparse.ArgumentParser(description="狼人杀 agent 沙箱")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8000)
+    a = ap.parse_args(argv)
+    serve(a.host, a.port)
+    return 0
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000) -> None:

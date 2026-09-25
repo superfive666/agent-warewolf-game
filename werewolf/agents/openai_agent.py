@@ -12,7 +12,7 @@
 密钥可以直接给，也可以给一个环境变量名让它自己去取。
 不管哪种给法，密钥都只活在内存里 —— 阵容入库和回传前端时都会脱敏。
 
-需要 `pip install -r requirements-openai.txt`。
+需要 `uv sync --extra openai`。
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ class OpenAIAgent(ChatAgent):
                 from openai import OpenAI
             except ImportError as exc:  # pragma: no cover
                 raise RuntimeError(
-                    "OpenAI 后端需要 SDK：pip install -r requirements-openai.txt"
+                    "OpenAI 后端需要 SDK：uv sync --extra openai"
                 ) from exc
             key = self._api_key or os.environ.get(self.api_key_env)
             if not key:

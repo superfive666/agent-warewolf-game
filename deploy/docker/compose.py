@@ -22,7 +22,7 @@ def render(n: int, backend: str, model: str, effort: str, image: str) -> str:
             f"  agent-{seat:02d}:",
             f"    image: {image}",
             f"    container_name: wolf-seat-{seat:02d}",
-            "    command: [\"python3\", \"-m\", \"werewolf.agent_server\"]",
+            "    command: [\"werewolf-agent\"]",
             "    environment:",
             f"      WEREWOLF_SEAT: \"{seat}\"",
             f"      WEREWOLF_BACKEND: \"{backend}\"",
@@ -43,7 +43,7 @@ def render(n: int, backend: str, model: str, effort: str, image: str) -> str:
     lines += [
         "  orchestrator:",
         f"    image: {image}",
-        "    command: [\"python3\", \"run_server.py\", \"--host\", \"0.0.0.0\"]",
+        "    command: [\"werewolf-server\", \"--host\", \"0.0.0.0\"]",
         "    environment:",
         "      WEREWOLF_STORE: \"sqlite:/data/werewolf.db\"",
         "      ANTHROPIC_API_KEY: \"${ANTHROPIC_API_KEY:-}\"",

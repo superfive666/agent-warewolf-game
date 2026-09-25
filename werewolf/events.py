@@ -37,8 +37,13 @@ class Event:
     payload: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
+        from .i18n import audience_cn_of, phase_cn
+
         d = asdict(self)
         d["audience"] = self.audience.value
+        # 数据模型保留英文标识符（好查询），同时带一份中文给所有展示端用
+        d["phase_cn"] = phase_cn(self.phase)
+        d["audience_cn"] = audience_cn_of(self.audience.value)
         return d
 
     def as_view_entry(self) -> dict:
@@ -47,10 +52,13 @@ class Event:
         payload 一并带上是安全的：可见性在事件层面已经过滤完毕，
         能看到这条事件的人本来就有权看到它的全部内容（GOD 级事件谁也看不到）。
         """
+        from .i18n import phase_cn
+
         return {
             "seq": self.seq,
             "day": self.day,
             "phase": self.phase,
+            "phase_cn": phase_cn(self.phase),
             "type": self.type,
             "vis": self.audience.value,
             "actor": self.actor,

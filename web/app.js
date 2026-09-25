@@ -283,7 +283,7 @@ async function tick() {
 function appendEvent(e) {
   const d = el('div', 'ev ' + e.audience + (e.type === 'explode' ? ' explode' : ''));
   const mark = { public: '', wolves: '🐺 ', private: '🔒 ', god: '👁 ' }[e.audience] || '';
-  d.appendChild(el('span', 'ph', `第${e.day}天 ${e.phase}`));
+  d.appendChild(el('span', 'ph', `第${e.day}天 ${e.phase_cn || e.phase}`));
   d.appendChild(document.createTextNode(mark + e.text));
   const feed = $('#feed');
   const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
@@ -300,8 +300,9 @@ function renderSnapshot(s) {
   }[s.status] || s.status;
   const cur = s.current || {};
   $('#phase-label').textContent =
-    `第 ${s.day} 天 · ${s.phase}` +
-    (cur.seat && s.status === 'running' ? ` · 正在等 ${cur.seat}号 做「${cur.action_type}」` : '');
+    `第 ${s.day} 天 · ${s.phase_cn || s.phase}` +
+    (cur.seat && s.status === 'running'
+      ? ` · 正在等 ${cur.seat}号「${cur.action_cn || cur.action_type || ''}」` : '');
 
   const grid = $('#seat-grid');
   grid.innerHTML = '';
@@ -318,9 +319,12 @@ function renderSnapshot(s) {
       box.appendChild(el('div', 'role ' + (shown === '狼人' ? 'wolf' : 'good'),
         shown + (p.role_cn ? '' : '（已翻牌）')));
     } else if (p.claim) {
-      box.appendChild(el('div', 'meta', '自称 ' + p.claim));
+      box.appendChild(el('div', 'meta', '自称【' + (p.claim_cn || p.claim) + '】'));
     }
-    if (!p.alive) box.appendChild(el('div', 'meta', `第${p.died_day}天出局`));
+    if (!p.alive) {
+      box.appendChild(el('div', 'meta',
+        `第${p.died_day}天${p.died_cause_cn ? '·' + p.died_cause_cn : ''}出局`));
+    }
     grid.appendChild(box);
   });
 }
@@ -375,8 +379,9 @@ function renderSessions(sessions, res) {
     const roleCn = res.roles_cn[String(s.seat)] || s.role || '';
     const n = (s.messages || []).length;
     d.appendChild(el('summary', null,
-      `${s.seat}号 · ${roleCn} · ${s.backend || ''}${s.model ? ' / ' + s.model : ''}` +
-      ` · ${n} 条消息 · 释放原因 ${s.release_reason || '—'}`));
+      `${s.seat}号 · ${roleCn} · ${s.backend_cn || s.backend || ''}` +
+      `${s.model ? ' / ' + s.model : ''} · ${n} 条消息 · 离场原因：` +
+      `${s.release_reason_cn || s.release_reason || '—'}`));
     const body = el('div', 'body');
     if (s.memory_uri) body.appendChild(el('div', 'act', 'memory 卷：' + s.memory_uri));
     if (s.notes) {
@@ -418,10 +423,10 @@ function renderThoughts(thoughts, res) {
     bySeat[seat].forEach((t) => {
       const b = el('div', 'th' + (t.accepted ? '' : ' rejected'));
       b.appendChild(el('div', 'when',
-        `第${t.day}天 · ${t.phase} · ${t.action_type}` +
+        `第${t.day}天 · ${t.phase_cn || t.phase} · ${t.action_cn || t.action_type}` +
         (t.accepted ? '' : `（第${t.attempt}次尝试被判非法：${t.error}）`)));
       b.appendChild(el('div', 'txt', t.thought));
-      if (t.action) b.appendChild(el('div', 'act', '→ ' + JSON.stringify(t.action)));
+      if (t.action_desc) b.appendChild(el('div', 'act', '→ ' + t.action_desc));
       body.appendChild(b);
     });
     d.appendChild(body);

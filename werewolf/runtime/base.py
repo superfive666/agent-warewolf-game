@@ -54,6 +54,8 @@ class LocalRuntime:
         self.seat = seat
         self.agent = agent
         self.label = label or getattr(agent, "name", f"seat-{seat}")
+        #: agent 自己要求的迭代上限（真人座位会放宽）；None = 用引擎的默认值
+        self.max_iterations = getattr(agent, "max_iterations", None)
         self._released = False
         self._release_reason: str | None = None
 

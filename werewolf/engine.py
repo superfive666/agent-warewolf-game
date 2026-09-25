@@ -72,8 +72,10 @@ class Engine:
         self._turn += 1
         agent = self.agents[seat]
         error = None
+        # 真人座位会要求更宽的迭代上限（人会手滑），其余座位用全局配置
+        limit = getattr(agent, "max_iterations", None) or self.max_iterations
 
-        for attempt in range(self.max_iterations):
+        for attempt in range(limit):
             view = build_player_view(
                 st, seat,
                 action_type=action_type,
@@ -98,7 +100,7 @@ class Engine:
                 self.emit(
                     type="invalid_action", audience=Audience.GOD, actor=seat,
                     text=f"{seat}号的「{i18n.action_cn(action_type)}」动作非法"
-                 f"（第{attempt + 1}/{self.max_iterations}次）：{error}",
+                 f"（第{attempt + 1}/{limit}次）：{error}",
                     payload={"action_type": action_type, "error": error},
                 )
                 continue
@@ -108,7 +110,7 @@ class Engine:
                                      action=None, accepted=False, error=error)
                 self.emit(
                     type="agent_error", audience=Audience.GOD, actor=seat,
-                    text=f"{seat}号的 agent 报错（第{attempt + 1}/{self.max_iterations}次）：{error}",
+                    text=f"{seat}号的 agent 报错（第{attempt + 1}/{limit}次）：{error}",
                     payload={"action_type": action_type, "error": error},
                 )
                 continue
@@ -121,7 +123,7 @@ class Engine:
         fallback = A.default_action(st, seat, action_type, ctx)
         self.emit(
             type="fallback_action", audience=Audience.GOD, actor=seat,
-            text=f"{seat}号用尽 {self.max_iterations} 次迭代，"
+            text=f"{seat}号用尽 {limit} 次迭代，"
                  f"「{i18n.action_cn(action_type)}」改用安全默认动作："
                  f"{i18n.describe_action(action_type, fallback) or '无'}",
             payload={"action_type": action_type, "action": fallback},

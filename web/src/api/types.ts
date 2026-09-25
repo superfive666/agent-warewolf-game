@@ -108,6 +108,15 @@ export interface Snapshot {
   winner?: Winner;
   winner_cn?: string | null;
   speech_progress?: { done: number; total: number } | null;
+  /** 这局有没有真人座位；有真人时进行中锁死上帝视角（服务端强制） */
+  has_human?: boolean;
+  human_seat?: number | null;
+  god_locked?: boolean;
+}
+
+/** POST /api/games 的返回：有真人座位时多给一次座位凭证 */
+export interface CreatedGame extends Snapshot {
+  human?: { seat: number; token: string };
 }
 
 export interface GameEvent {
@@ -125,6 +134,76 @@ export interface EventsResponse {
   total?: number;
   snapshot: Snapshot;
 }
+
+// ─────────── 真人座位 /api/games/<id>/seat ───────────
+
+/** 表单选项：value 原样回传给服务端 */
+export interface FormOption {
+  value: string | number | boolean | null;
+  label: string;
+}
+
+export interface FormField {
+  name: string;
+  label: string;
+  /** choice 单选 / multi 多选座位 / text / textarea / check 公布验人结果 */
+  kind: 'choice' | 'multi' | 'text' | 'textarea' | 'check';
+  required: boolean;
+  desc?: string;
+  /** 可选的次要字段，收进「更多」 */
+  advanced?: boolean;
+  options?: FormOption[];
+  /** kind=check：验人结果的选项 */
+  results?: FormOption[];
+  max_items?: number | null;
+  max_chars?: number;
+}
+
+export interface ActionForm {
+  action_type: string;
+  action_cn: string;
+  description: string;
+  fields: FormField[];
+}
+
+export interface PendingAction {
+  request_id: number;
+  action_type: string;
+  action_cn?: string;
+  /** 上一次提交被引擎判为非法时的原因 */
+  error?: string | null;
+  form: ActionForm | null;
+}
+
+export interface ViewEvent {
+  seq: number;
+  day: number;
+  phase_cn?: string;
+  type: string;
+  vis: Audience;
+  text: string;
+}
+
+export interface SeatIdentity {
+  seat: number;
+  role_cn: string;
+  faction_cn: string;
+  role_brief: string;
+  win_condition: string;
+  alive: boolean;
+  is_sheriff: boolean;
+}
+
+export interface SeatView {
+  seat: number;
+  view: { identity: SeatIdentity; timeline: ViewEvent[] };
+  knowledge_cn: string[];
+  pending: PendingAction | null;
+  released: boolean;
+  status: GameStatus;
+}
+
+export type ActionPayload = Record<string, unknown>;
 
 // ─────────── 复盘 ───────────
 

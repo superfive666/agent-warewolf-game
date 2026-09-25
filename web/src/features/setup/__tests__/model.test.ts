@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import { OPTIONS } from '@/test/fixtures';
 
-import { buildGameRequest, ctaSubtitle, initialSetup, llmUsage, normalizeSeat, seatSummary } from '../model';
+import {
+  buildGameRequest,
+  ctaSubtitle,
+  humanSeats,
+  initialSetup,
+  llmUsage,
+  normalizeSeat,
+  seatSummary,
+} from '../model';
 import { setupReducer } from '../useSetupForm';
 
 describe('setup model', () => {
@@ -95,5 +103,15 @@ describe('setup model', () => {
 
   it('ctaSubtitle', () => {
     expect(ctaSubtitle(initialSetup(OPTIONS), OPTIONS)).toBe('12 人 · 屠边 · 同进程 · 开局后全自动跑完');
+  });
+
+  it('真人座位：不算 LLM、不要密钥，副标题说你坐几号', () => {
+    const opts = { ...OPTIONS, backends: { ...OPTIONS.backends, human: { label: '真人玩家' } } };
+    let s = initialSetup(opts);
+    s = setupReducer(s, { type: 'updateSeat', index: 2, patch: { backend: 'human' }, options: opts });
+    expect(humanSeats(s.seats)).toEqual([3]);
+    expect(llmUsage(s, opts)).toBeNull();
+    expect(ctaSubtitle(s, opts)).toBe('12 人 · 屠边 · 同进程 · 你坐 3 号');
+    expect(buildGameRequest(s).seats[2]?.backend).toBe('human');
   });
 });

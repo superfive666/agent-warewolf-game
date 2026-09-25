@@ -8,8 +8,11 @@
 
 不管退到哪一档，返回值最后都要过 actions.validate()，所以格式没守住也不会串进游戏。
 
+挂自己的 provider 只需要三个参数：**base_url + model + api_key**。
+密钥可以直接给，也可以给一个环境变量名让它自己去取。
+不管哪种给法，密钥都只活在内存里 —— 阵容入库和回传前端时都会脱敏。
+
 需要 `pip install -r requirements-openai.txt`。
-凭据从环境变量读，**永远不从前端传进来**（阵容配置会写进会话库）。
 """
 from __future__ import annotations
 
@@ -32,19 +35,28 @@ class OpenAIAgent(ChatAgent):
     def __init__(self, seat: int, role: Role | None, *,
                  model: str = DEFAULT_MODEL,
                  base_url: str | None = None,
+                 api_key: str | None = None,
                  api_key_env: str = "OPENAI_API_KEY",
                  base_url_env: str = "OPENAI_BASE_URL",
                  effort: str | None = None,
                  temperature: float | None = None,
                  max_tokens: int = 16000,
+                 timeout: float = 120.0,
+                 max_retries: int = 0,
                  client=None, verbose: bool = False, memory_dir=None,
                  response_mode: str | None = None) -> None:
         super().__init__(seat, role, model=model, max_tokens=max_tokens,
                          verbose=verbose, memory_dir=memory_dir)
         self.api_key_env = api_key_env
+        #: 直接给的密钥。不进任何日志、不进会话存档
+        self._api_key = api_key or None
         self.base_url = base_url or os.environ.get(base_url_env) or None
         self.effort = effort
         self.temperature = temperature
+        #: 引擎自己已经有 max_iterations 的重试循环了，SDK 再叠一层指数退避
+        #: 会让"网关连不上"从秒级变成分钟级。所以这里默认不让 SDK 重试。
+        self.timeout = timeout
+        self.max_retries = max_retries
         self._client = client
         #: 试出来能用的那一档，试出来之后就固定
         self._mode = response_mode if response_mode in _MODES else None
@@ -61,12 +73,16 @@ class OpenAIAgent(ChatAgent):
                 raise RuntimeError(
                     "OpenAI 后端需要 SDK：pip install -r requirements-openai.txt"
                 ) from exc
-            key = os.environ.get(self.api_key_env)
+            key = self._api_key or os.environ.get(self.api_key_env)
             if not key:
                 raise RuntimeError(
-                    f"没有找到 API key：请设置环境变量 {self.api_key_env}"
+                    f"{self.seat}号没有拿到 API key：请直接传 api_key，"
+                    f"或者设置环境变量 {self.api_key_env}"
                 )
-            self._client = OpenAI(api_key=key, base_url=self.base_url)
+            self._client = OpenAI(
+                api_key=key, base_url=self.base_url,
+                timeout=self.timeout, max_retries=self.max_retries,
+            )
         return self._client
 
     # ------------------------------------------------------------------
@@ -128,6 +144,12 @@ class OpenAIAgent(ChatAgent):
                     resp = self._call_once(action_type, mode, tp)
                 except Exception as exc:
                     errors.append(f"[{mode}/{tp}] {type(exc).__name__}: {exc}")
+                    if _is_connection_error(exc):
+                        # 连不上就别试了，把地址原样报出来，比重试半天有用
+                        raise RuntimeError(
+                            f"连不上 {self.base_url or 'OpenAI 默认地址'} —— "
+                            f"检查 base_url 是否正确、网关是否在跑。原始错误：{exc}"
+                        ) from exc
                     if not _is_capability_error(exc):
                         # 不是"网关不支持这个参数"，再退让也没意义
                         raise
@@ -170,6 +192,19 @@ _CAPABILITY_HINTS = (
     "max_completion_tokens", "reasoning_effort", "temperature", "does not support",
     "extra fields", "additionalproperties", "unexpected keyword",
 )
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    """网关压根连不上。这种要立刻报错，不能陪着重试。"""
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    name = type(exc).__name__
+    if name in ("APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout"):
+        return True
+    blob = f"{name} {exc}".lower()
+    return any(w in blob for w in
+               ("connection error", "connection refused", "failed to establish",
+                "name or service not known", "timed out", "max retries exceeded"))
 
 
 def _is_capability_error(exc: Exception) -> bool:

@@ -226,6 +226,11 @@ class Handler(BaseHTTPRequestHandler):
                     for k, v in AVAILABLE_BACKENDS.items() if v.get("needs_key")
                 },
                 "base_url_env": os.environ.get("OPENAI_BASE_URL", ""),
+                # 只说环境里有没有，绝不把密钥本身发给前端
+                "env_key_present": {
+                    v["needs_key"]: bool(os.environ.get(v["needs_key"]))
+                    for v in AVAILABLE_BACKENDS.values() if v.get("needs_key")
+                },
                 "efforts": EFFORT_LEVELS,
                 "deployments": DEPLOYMENTS,
                 "store": STORE_URI,
@@ -294,6 +299,12 @@ class Handler(BaseHTTPRequestHandler):
                 deployment = payload.get("deployment", DEFAULT_DEPLOYMENT)
                 if deployment not in DEPLOYMENTS:
                     raise ValueError(f"不认识的部署模式 {deployment!r}")
+                missing = lineup.missing_keys()
+                if missing:
+                    raise ValueError(
+                        f"这些座位配了 LLM 但拿不到 API key：{missing}。"
+                        "请在「高级选项」里填 API Key，或在服务端设好对应的环境变量。"
+                    )
                 # GameRunner 会发牌，板子不合法在这里就会报错，必须一起包住
                 runner = GameRunner(config, lineup, deployment)
             except (ValueError, KeyError, TypeError) as exc:

@@ -26,12 +26,14 @@ class LLMAgent(ChatAgent):
                  model: str = DEFAULT_MODEL,
                  effort: str = "medium",
                  max_tokens: int = 16000,
+                 api_key: str | None = None,
                  api_key_env: str = "ANTHROPIC_API_KEY",
                  client=None, verbose: bool = False, memory_dir=None) -> None:
         super().__init__(seat, role, model=model, max_tokens=max_tokens,
                          verbose=verbose, memory_dir=memory_dir)
         self.effort = effort
         self.api_key_env = api_key_env
+        self._api_key = api_key or None
         self._client = client
 
     @property
@@ -43,7 +45,7 @@ class LLMAgent(ChatAgent):
                 raise RuntimeError(
                     "Claude 后端需要 SDK：pip install -r requirements-llm.txt"
                 ) from exc
-            key = os.environ.get(self.api_key_env)
+            key = self._api_key or os.environ.get(self.api_key_env)
             # 没显式给 key 时交给 SDK 自己解析（环境变量 / ant auth login 的 profile）
             self._client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
         return self._client

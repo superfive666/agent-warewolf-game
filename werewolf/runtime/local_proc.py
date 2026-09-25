@@ -46,6 +46,8 @@ class SubprocessRuntime(HttpRuntime):
             "WEREWOLF_EFFORT": self.spec.effort,
             "WEREWOLF_BASE_URL": self.spec.base_url,
             "WEREWOLF_API_KEY_ENV": self.spec.api_key_env,
+            # 显式给了密钥就注进去；没给就靠容器自己的环境变量
+            **({self.spec.api_key_env: self.spec.api_key} if self.spec.api_key else {}),
             "WEREWOLF_MAX_TOKENS": str(self.spec.max_tokens),
             "WEREWOLF_MEMORY_DIR": str(self.memory_root),
             "WEREWOLF_PORT": str(self.port),

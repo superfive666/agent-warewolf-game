@@ -52,8 +52,15 @@ EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 class SeatSpec:
     """一个座位的 agent 配置。
 
-    **这里不放 API key。** 阵容会原样写进会话库，密钥绝不能跟着进去 ——
-    所以只存"去哪个环境变量里取"（``api_key_env``），真正的密钥永远留在环境里。
+    挂自己的 provider 只需要三个参数：``base_url`` + ``model`` + ``api_key``。
+
+    密钥有两种给法，任选：
+      · ``api_key``     —— 直接给密钥本身
+      · ``api_key_env`` —— 给一个环境变量名，运行时去那里取（默认按后端取）
+
+    **``as_dict()`` 会把密钥脱敏。** 阵容要写进会话库、还要回传给前端展示，
+    密钥不能跟着走。内存里该用的时候照常用（``resolve_api_key()``），
+    但任何持久化和对外输出里只会看到 ``api_key_set: true/false``。
     """
 
     seat: int
@@ -62,9 +69,11 @@ class SeatSpec:
     effort: str = "medium"
     #: 思考长度不限，但单次决策的 token 预算要给足
     max_tokens: int = 16000
-    #: OpenAI 兼容网关的地址。留空则读环境变量 OPENAI_BASE_URL
+    #: 自定义 provider 的地址。留空则读环境变量（OPENAI_BASE_URL）
     base_url: str = ""
-    #: 去哪个环境变量取密钥（存的是变量名，不是密钥本身）
+    #: 密钥本身。只活在内存里，绝不进 as_dict()
+    api_key: str = field(default="", repr=False)
+    #: 或者：去哪个环境变量取密钥（存的是变量名，不是密钥）
     api_key_env: str = ""
     label: str = ""
 
@@ -84,8 +93,16 @@ class SeatSpec:
                 raise ValueError(f"{self.model} 是 Claude 模型，请把后端改成 claude")
         if self.effort not in EFFORT_LEVELS:
             raise ValueError(f"未知 effort {self.effort}，可选 {EFFORT_LEVELS}")
+        self.api_key = (self.api_key or "").strip()
         if self.api_key_env and not _ENV_NAME.match(self.api_key_env):
-            raise ValueError(f"api_key_env 必须是环境变量名，收到 {self.api_key_env!r}")
+            # 最常见的手滑：把密钥本身粘到了变量名那一栏。直接帮他挪过去。
+            if not self.api_key and len(self.api_key_env) > 20 and " " not in self.api_key_env:
+                self.api_key, self.api_key_env = self.api_key_env, ""
+            else:
+                raise ValueError(
+                    f"api_key_env 要填【环境变量名】（比如 MY_GATEWAY_KEY），"
+                    f"密钥本身请填 api_key。收到 {self.api_key_env!r}"
+                )
         if not self.api_key_env and info.get("needs_key"):
             self.api_key_env = info["needs_key"]
         if self.base_url and not self.base_url.startswith(("http://", "https://")):
@@ -97,11 +114,23 @@ class SeatSpec:
                 else info["models"].get(self.model, {}).get("label") or self.model
             )
 
+    def resolve_api_key(self) -> str:
+        """取真正要用的密钥：显式给的优先，否则读环境变量。"""
+        import os
+
+        return self.api_key or os.environ.get(self.api_key_env or "", "") or ""
+
+    def has_api_key(self) -> bool:
+        return bool(self.resolve_api_key())
+
     def as_dict(self) -> dict:
+        """对外形态。**密钥在这里被脱敏** —— 这是入库和回传前端用的。"""
         return {
             "seat": self.seat, "backend": self.backend, "model": self.model,
             "effort": self.effort, "max_tokens": self.max_tokens,
             "base_url": self.base_url, "api_key_env": self.api_key_env,
+            # 只说"有没有配"，不说是什么
+            "api_key_set": bool(self.api_key),
             "label": self.label,
         }
 
@@ -124,8 +153,8 @@ class Lineup:
             backend = BACKEND_ALIASES.get(d.get("backend", "heuristic"),
                                           d.get("backend", "heuristic"))
             default_model = "gpt-5" if backend == "openai" else "claude-opus-5"
-            # 注意：这里刻意不接受任何形如 api_key 的字段。
-            # 前端传进来的东西会原样入库，密钥只能走环境变量。
+            # 密钥可以直接传（挂自建 provider 用），但它只活在内存里：
+            # SeatSpec.as_dict() 会脱敏，所以入库和回传前端的都看不到它。
             specs[s] = SeatSpec(
                 seat=s,
                 backend=backend,
@@ -133,9 +162,17 @@ class Lineup:
                 effort=d.get("effort", "medium"),
                 max_tokens=int(d.get("max_tokens", 16000)),
                 base_url=(d.get("base_url") or "").strip(),
+                api_key=(d.get("api_key") or "").strip(),
                 api_key_env=(d.get("api_key_env") or "").strip(),
             )
         return cls(specs)
+
+    def missing_keys(self) -> list[int]:
+        """哪些座位配了 LLM 但拿不到密钥 —— 开局前就该提示，而不是打到一半才报错。"""
+        return [
+            sp.seat for sp in self.specs.values()
+            if sp.backend != "heuristic" and not sp.has_api_key()
+        ]
 
     def uses_llm(self) -> bool:
         return any(sp.backend != "heuristic" for sp in self.specs.values())
@@ -156,6 +193,7 @@ class Lineup:
                 agents[seat] = LLMAgent(
                     seat, role, model=sp.model, effort=sp.effort,
                     max_tokens=sp.max_tokens, verbose=verbose,
+                    api_key=sp.api_key or None,
                     api_key_env=sp.api_key_env or "ANTHROPIC_API_KEY",
                 )
             elif sp.backend == "openai":
@@ -164,6 +202,7 @@ class Lineup:
                 agents[seat] = OpenAIAgent(
                     seat, role, model=sp.model, max_tokens=sp.max_tokens,
                     base_url=sp.base_url or None, verbose=verbose,
+                    api_key=sp.api_key or None,
                     api_key_env=sp.api_key_env or "OPENAI_API_KEY",
                     effort=sp.effort if sp.effort in ("low", "medium", "high") else None,
                 )

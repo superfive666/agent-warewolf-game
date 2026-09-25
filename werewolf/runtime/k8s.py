@@ -91,7 +91,11 @@ class K8sRuntime(HttpRuntime):
             c.V1EnvVar(name="WEREWOLF_MEMORY_DIR", value="/memory"),
             c.V1EnvVar(name="WEREWOLF_PORT", value="8100"),
         ] + [c.V1EnvVar(name=k, value=str(v)) for k, v in self.env.items()]
-        if self.secret_name:
+        if self.spec.api_key:
+            # 注意：直接注进 Pod spec 的密钥，任何能 `kubectl get pod -o yaml`
+            # 的人都看得到。生产环境请改用下面的 Secret 方式。
+            env.append(c.V1EnvVar(name=self.spec.api_key_env, value=self.spec.api_key))
+        elif self.secret_name:
             env.append(c.V1EnvVar(
                 name="ANTHROPIC_API_KEY",
                 value_from=c.V1EnvVarSource(secret_key_ref=c.V1SecretKeySelector(

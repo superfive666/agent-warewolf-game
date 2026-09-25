@@ -86,6 +86,11 @@ class ChatAgent:
         self.thoughts: list[dict] = []
         self.usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}
 
+    def __repr__(self) -> str:
+        # 显式脱敏：不让密钥出现在任何日志或 traceback 里
+        return (f"<{type(self).__name__} seat={self.seat} provider={self.provider} "
+                f"model={self.model!r} api_key={'***' if getattr(self, '_api_key', None) else None}>")
+
     # ------------------------------------------------------------------
     def _complete(self, action_type: str) -> str:
         """调模型，返回它输出的原始文本。子类实现。"""

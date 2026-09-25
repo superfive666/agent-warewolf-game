@@ -39,8 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
   python3 run_game.py --games 100 --quiet      # 跑 100 局统计胜率
   python3 run_game.py --backend claude         # 12 个 Claude agent 打一局
   python3 run_game.py --backend openai --model gpt-5           # 用 OpenAI
-  python3 run_game.py --backend openai --model qwen-max \\
-      --base-url https://my-gateway/v1                         # 自建/兼容网关
+  python3 run_game.py --backend openai \\
+      --base-url https://my-gateway/v1 --model qwen-max --api-key sk-xxx
+                                                               # 挂自己的 provider
   python3 run_game.py --backend claude --llm-seats 1,2,3       # 3 个 LLM + 9 个 bot
 """,
     )
@@ -56,8 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--base-url", default=None,
                    help="OpenAI 兼容网关地址，如 https://my-gateway/v1"
                         "（也可用环境变量 OPENAI_BASE_URL）")
+    p.add_argument("--api-key", default=None,
+                   help="直接给 API key。挂自己的 provider 就用 "
+                        "--base-url + --model + --api-key 三件套")
     p.add_argument("--api-key-env", default=None,
-                   help="去哪个环境变量取密钥。注意这里填【变量名】，不是密钥本身")
+                   help="或者：去哪个环境变量取密钥（填变量名，不是密钥本身）")
     p.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--win-rule", choices=["edge", "city"], default="edge", help="edge=屠边 city=屠城")
     p.add_argument("--no-sheriff", action="store_true", help="关闭警长竞选")
@@ -103,6 +107,7 @@ def run_one(args, seed: int | None, quiet: bool) -> tuple:
             "model": args.model or ("gpt-5" if args.backend == "openai" else "claude-opus-5"),
             "effort": args.effort,
             "base_url": args.base_url or "",
+            "api_key": args.api_key or "",
             "api_key_env": args.api_key_env or "",
         }
         for s in range(1, args.n_players + 1)
@@ -136,6 +141,11 @@ def run_one(args, seed: int | None, quiet: bool) -> tuple:
                 {"turn": turn, "seat": seat, "action_type": action_type, "view": view.as_dict()}
             )
 
+    missing = lineup.missing_keys()
+    if missing and not quiet:
+        print(f"⚠️  这些座位配了 LLM 但拿不到 API key：{missing}。"
+              f"它们会连续报错并退回安全默认动作。"
+              f"用 --api-key 直接给，或者设好对应的环境变量。")
     state = session.run(on_event=on_event, view_recorder=recorder)
     return state, session, view_snapshots, lineup
 

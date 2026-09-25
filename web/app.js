@@ -51,6 +51,7 @@ async function init() {
   };
   $('#deployment').onchange = syncDep;
   syncDep();
+  $('#api-key').oninput = checkLLM;
   $('#bulk-effort').value = 'medium';
   $('#bulk-apply').onclick = applyBulk;
   $('#start').onclick = startGame;
@@ -158,17 +159,24 @@ function checkLLM() {
     .map((x) => x.value).filter((v) => v !== 'heuristic'));
   const warn = $('#llm-warn');
   if (!used.size) { warn.classList.add('hidden'); return; }
-  const missing = [...used].filter((b) => OPTIONS.keys_present && OPTIONS.keys_present[b] === false);
   warn.classList.remove('hidden');
   warn.innerHTML = '';
   const names = [...used].map((b) => OPTIONS.backends[b].label).join('、');
   warn.appendChild(document.createTextNode(`有座位选了 ${names}。`));
+
+  const typed = $('#api-key') && $('#api-key').value.trim();
+  if (typed) {
+    warn.appendChild(document.createTextNode(' 已在高级选项里填了 API Key。'));
+    return;
+  }
+  const missing = [...used].filter(
+    (b) => OPTIONS.keys_present && OPTIONS.keys_present[b] === false);
   if (missing.length) {
     const envs = missing.map((b) => OPTIONS.backends[b].needs_key).join(' / ');
     warn.appendChild(el('b', null,
-      ` 服务端还没有设置 ${envs}，这些座位会连续报错并退回安全默认动作。`));
+      ` 服务端没有设置 ${envs}，也没在高级选项里填 API Key —— 开局会被拒绝。`));
   } else {
-    warn.appendChild(document.createTextNode(' 服务端已配置好密钥。'));
+    warn.appendChild(document.createTextNode(' 服务端环境里已有密钥。'));
   }
 }
 
@@ -178,14 +186,17 @@ function collectSeats() {
   const customs = [...document.querySelectorAll('.seat-custom-model')];
   const efforts = [...document.querySelectorAll('.seat-effort')];
   const baseUrl = $('#base-url').value.trim();
+  const apiKey = $('#api-key').value;
   const keyEnv = $('#api-key-env').value.trim();
-  // 注意：这里只传变量名，绝不传密钥 —— 阵容会原样写进会话库
+  // 挂自己的 provider 的三件套：base_url + model + api_key。
+  // 密钥只用于这一次请求 —— 服务端不会把它写进会话库，也不会回传给页面。
   return backends.map((b, i) => ({
     seat: Number(b.dataset.seat),
     backend: b.value,
     model: (customs[i].value.trim() || models[i].value),
     effort: efforts[i].value,
     base_url: baseUrl,
+    api_key: apiKey,
     api_key_env: keyEnv,
   }));
 }

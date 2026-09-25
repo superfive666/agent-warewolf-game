@@ -256,22 +256,77 @@ class TestFullGame(unittest.TestCase):
 class TestCredentialSafety(unittest.TestCase):
     """密钥绝不能进阵容 —— 阵容会原样写进会话库。"""
 
-    def test_lineup_never_carries_a_key(self):
-        lu = Lineup.from_payload(3, [
+    def test_the_three_parameters_mount_a_custom_provider(self):
+        """挂自己的 provider 就是这三件套：base_url + model + api_key。"""
+        lu = Lineup.from_payload(2, [
+            {"seat": 1, "backend": "openai", "model": "my/llama-3-70b",
+             "base_url": "https://gw.internal/v1", "api_key": "sk-my-secret-000"},
+        ])
+        sp = lu.specs[1]
+        self.assertEqual(sp.base_url, "https://gw.internal/v1")
+        self.assertEqual(sp.model, "my/llama-3-70b")
+        self.assertEqual(sp.resolve_api_key(), "sk-my-secret-000")
+        self.assertTrue(sp.has_api_key())
+
+    def test_key_is_redacted_everywhere_it_gets_persisted_or_returned(self):
+        """阵容要入库、要回传前端，所以 as_dict() 必须脱敏。"""
+        lu = Lineup.from_payload(2, [
             {"seat": 1, "backend": "openai", "model": "m",
-             "base_url": "https://gw/v1", "api_key_env": "MY_KEY",
-             # 就算前端硬塞，也不该被接受
-             "api_key": "sk-should-never-appear", "openai_api_key": "sk-nope"},
+             "api_key": "sk-should-never-appear"},
         ])
         blob = json.dumps(lu.as_list(), ensure_ascii=False)
         self.assertNotIn("sk-should-never-appear", blob)
-        self.assertNotIn("sk-nope", blob)
-        self.assertNotIn("api_key\"", blob.replace("api_key_env", ""))
-        self.assertEqual(lu.specs[1].api_key_env, "MY_KEY")
+        self.assertIn('"api_key_set": true', blob)
+        # 但内存里照常可用
+        self.assertEqual(lu.specs[1].resolve_api_key(), "sk-should-never-appear")
 
-    def test_a_real_key_pasted_into_api_key_env_is_rejected(self):
+    def test_key_never_reaches_the_session_archive(self):
+        from werewolf.runtime import LocalRuntime
+
+        a = OpenAIAgent(1, Role.SEER, model="m", api_key="sk-secret-xyz",
+                        client=FakeOpenAI())
+        a.act(_view(seat=1))
+        snap = LocalRuntime(1, a).snapshot_session()
+        self.assertNotIn("sk-secret-xyz",
+                         json.dumps(snap, ensure_ascii=False, default=str))
+
+    def test_repr_is_redacted(self):
+        a = OpenAIAgent(1, Role.SEER, model="m", api_key="sk-secret-xyz")
+        self.assertNotIn("sk-secret-xyz", repr(a))
+        self.assertIn("***", repr(a))
+
+    def test_key_falls_back_to_the_named_env_var(self):
+        import os
+
+        os.environ["WEREWOLF_TEST_KEY"] = "sk-from-env"
+        try:
+            sp = SeatSpec(seat=1, backend="openai", model="m",
+                          api_key_env="WEREWOLF_TEST_KEY")
+            self.assertEqual(sp.resolve_api_key(), "sk-from-env")
+            self.assertFalse(sp.as_dict()["api_key_set"], "环境变量来的不算显式配置")
+        finally:
+            del os.environ["WEREWOLF_TEST_KEY"]
+
+    def test_key_pasted_into_the_env_var_field_is_recovered(self):
+        """最常见的手滑：把密钥粘到了"变量名"那一栏。帮他挪过去而不是报错。"""
+        sp = SeatSpec(seat=1, backend="openai", model="m",
+                      api_key_env="sk-pasted-into-the-wrong-box-1234")
+        self.assertEqual(sp.resolve_api_key(), "sk-pasted-into-the-wrong-box-1234")
+        self.assertEqual(sp.api_key_env, "OPENAI_API_KEY")
+        self.assertNotIn("sk-pasted", json.dumps(sp.as_dict(), ensure_ascii=False))
+
+    def test_a_clearly_wrong_env_var_name_is_still_rejected(self):
         with self.assertRaises(ValueError):
-            SeatSpec(seat=1, backend="openai", model="m", api_key_env="sk-abc123")
+            SeatSpec(seat=1, backend="openai", model="m",
+                     api_key_env="has spaces", api_key="sk-x")
+
+    def test_missing_keys_are_reported_before_the_game_starts(self):
+        lu = Lineup.from_payload(3, [
+            {"seat": 1, "backend": "openai", "model": "m",
+             "api_key_env": "DEFINITELY_NOT_SET_XYZ"},
+            {"seat": 2, "backend": "openai", "model": "m", "api_key": "sk-ok"},
+        ])
+        self.assertEqual(lu.missing_keys(), [1])
 
     def test_base_url_must_be_http(self):
         with self.assertRaises(ValueError):

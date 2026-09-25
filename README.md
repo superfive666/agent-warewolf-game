@@ -60,10 +60,10 @@ python3 run_game.py --max-speech-chars 300 # 发言限制更短
 pip install -r requirements-llm.txt && export ANTHROPIC_API_KEY=...
 python3 run_game.py --backend claude --show-thoughts
 
-# 真 LLM —— OpenAI 或任意兼容网关
+# 真 LLM —— OpenAI 或挂自己的 provider（base_url + model + api_key 三件套）
 pip install -r requirements-openai.txt
-export OPENAI_API_KEY=... OPENAI_BASE_URL=https://my-gateway/v1
-python3 run_game.py --backend openai --model qwen-max
+python3 run_game.py --backend openai \
+    --base-url https://my-gateway/v1 --model my-provider/llama-3-70b --api-key sk-xxx
 
 python3 run_game.py --backend openai --llm-seats 1,2,3   # 3 个 LLM + 9 个 bot，先小成本试
 
@@ -170,7 +170,7 @@ OK
 |---|---|
 | `heuristic`（默认） | 纯 Python 规则 bot，零依赖。会悍跳、跟查杀、做站边分析、在压力下自爆，并且会输出自己的心路历程。毫秒级跑完一局。 |
 | `claude` | 调 Claude Messages API。**每个座位可以单独指定模型和 effort**，每个座位一个独立会话，座位之间没有任何共享对象。 |
-| `openai` | 调 OpenAI Chat Completions，**也支持任何 OpenAI 兼容网关**（自定义 base_url + 任意模型名）。会自己试出网关支持哪一档结构化输出并记住。 |
+| `openai` | 调 OpenAI Chat Completions，**也支持任何 OpenAI 兼容网关**：`base_url` + `model` + `api_key` 三个参数就能挂自己的 provider，模型名随便填。会自己试出网关支持哪一档结构化输出并记住。密钥只活在内存里，不进会话库。 |
 
 两者走**完全相同的信息通道**——都只拿到 `PlayerView`，没有后门。可以任意混搭。
 
@@ -286,6 +286,6 @@ werewolf/
 
 - **规则 bot + 网页沙箱**：只需要 Python 3.11+，**零第三方依赖**（前端也没有构建步骤）
 - **Claude 后端**：`pip install -r requirements-llm.txt`，并设置 `ANTHROPIC_API_KEY`
-- **OpenAI / 兼容网关后端**：`pip install -r requirements-openai.txt`，并设置 `OPENAI_API_KEY`（自建网关另设 `OPENAI_BASE_URL`）
+- **OpenAI / 兼容网关后端**：`pip install -r requirements-openai.txt`；密钥用 `--api-key` 直接给，或设 `OPENAI_API_KEY`
 - **k8s 部署**：`pip install -r requirements-k8s.txt`（官方 kubernetes SDK）
 - **会话存储**：SQLite 走标准库 `sqlite3`，不需要装任何东西

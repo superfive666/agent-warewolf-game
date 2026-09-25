@@ -47,9 +47,13 @@
           <input id="base-url" type="text" placeholder="https://my-gateway/v1">
           <span class="hint">留空则用服务端的 OPENAI_BASE_URL</span>
         </label>
-        <label>密钥环境变量名
+        <label>API Key
+          <input id="api-key" type="password" placeholder="sk-..." autocomplete="off">
+          <span class="hint">直接填密钥。<b>不会写进会话库</b>，也不会回传给页面；留空则用服务端环境变量</span>
+        </label>
+        <label>密钥环境变量名（可选）
           <input id="api-key-env" type="text" placeholder="OPENAI_API_KEY">
-          <span class="hint">这里填<b>变量名</b>，不是密钥。密钥只留在服务端环境里，不会进数据库</span>
+          <span class="hint">不想直接填密钥时，改成填一个<b>变量名</b>，运行时去那里取</span>
         </label>
         <label>随机种子<input id="seed" type="number" placeholder="留空 = 每局都不同"></label>
         <label>发言字数上限
